@@ -6,6 +6,14 @@ from typing import Any, Literal
 
 ProjectStatus = Literal["created", "running", "completed", "failed"]
 TemplateSourceType = Literal["user_upload", "library_default"]
+MODEL_TASK_TYPES = (
+    "planner",
+    "reviewer",
+    "consistency",
+    "survey_synthesizer",
+    "writer",
+    "code",
+)
 
 
 @dataclass(slots=True)
@@ -38,6 +46,23 @@ class ModelRoutingPolicy:
     fallback_models: list[str]
     temperature: float = 0.2
     max_tokens: int = 4096
+
+
+@dataclass(slots=True)
+class ModelProviderSettings:
+    id: str
+    label: str
+    api_base: str
+    api_key: str
+    priority: int
+    enabled: bool
+    models: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class ModelSettingsPayload:
+    providers: list[ModelProviderSettings] = field(default_factory=list)
+    task_routes: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -132,4 +157,3 @@ class ProjectState:
     warnings: list[str] = field(default_factory=list)
     artifacts: ArtifactBundle = field(default_factory=ArtifactBundle)
     execution_log: list[str] = field(default_factory=list)
-

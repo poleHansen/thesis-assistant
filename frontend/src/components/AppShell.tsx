@@ -12,10 +12,13 @@ export function AppShell({ children }: PropsWithChildren) {
           </Link>
           <nav className="nav">
             <NavLink to="/" className="nav__link">
-              首页
+              Home
             </NavLink>
             <NavLink to="/workspace" className="nav__link">
-              工作台
+              Workspace
+            </NavLink>
+            <NavLink to="/settings" className="nav__link">
+              Settings
             </NavLink>
           </nav>
         </div>

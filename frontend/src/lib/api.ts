@@ -1,5 +1,6 @@
 import type {
   ArtifactBundle,
+  ModelSettings,
   ProjectCreate,
   ProjectListItem,
   ProjectState,
@@ -19,6 +20,18 @@ async function requestJson<T>(input: RequestInfo, init?: RequestInit): Promise<T
 
 export function listProjects() {
   return requestJson<ProjectListItem[]>(`${API_BASE}/projects`);
+}
+
+export function getModelSettings() {
+  return requestJson<ModelSettings>(`${API_BASE}/settings/models`);
+}
+
+export function updateModelSettings(payload: ModelSettings) {
+  return requestJson<ModelSettings>(`${API_BASE}/settings/models`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
 }
 
 export async function createProject(payload: ProjectCreate) {

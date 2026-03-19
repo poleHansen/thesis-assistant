@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse
 from app.config import SETTINGS
 from app.domain import ProjectCreate, ProjectState
 from app.model_gateway import ModelGateway
+from app.model_settings import ModelSettingsError, ModelSettingsStore
 from app.repository import ProjectRepository
 from app.storage import ProjectStorage
 from app.template_service import TemplateService
@@ -20,7 +21,8 @@ from app.workflow import LangGraphSupervisor
 SETTINGS.ensure_directories()
 repository = ProjectRepository()
 storage = ProjectStorage()
-gateway = ModelGateway()
+model_settings_store = ModelSettingsStore()
+gateway = ModelGateway(model_settings_store.load())
 template_service = TemplateService()
 supervisor = LangGraphSupervisor(repository, storage, gateway, template_service)
 
@@ -47,6 +49,22 @@ def health() -> dict[str, str]:
 @app.get("/projects")
 def list_projects() -> list[dict[str, str]]:
     return repository.list_projects()
+
+
+@app.get("/settings/models")
+def get_model_settings() -> dict:
+    return to_plain_data(gateway.get_settings())
+
+
+@app.put("/settings/models")
+def update_model_settings(payload: dict) -> dict:
+    try:
+        settings = model_settings_store.save(payload)
+    except ModelSettingsError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    gateway.reload(settings)
+    return to_plain_data(settings)
 
 
 @app.post("/projects")

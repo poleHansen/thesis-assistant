@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app.domain import ModelRoutingPolicy, ProviderConfig
-from app.providers import OpenAICompatibleProvider, ProviderError, ProviderResponse, StubProvider
+from app.domain import MODEL_TASK_TYPES, ModelProviderSettings, ModelSettingsPayload
+from app.model_settings import ModelSettingsStore
+from app.providers import OpenAICompatibleProvider, ProviderError, StubProvider
 
 
 @dataclass(slots=True)
@@ -15,89 +16,22 @@ class GatewayResult:
 
 
 class ModelGateway:
-    def __init__(
-        self,
-        provider_configs: dict[str, ProviderConfig] | None = None,
-        routing_policies: dict[str, ModelRoutingPolicy] | None = None,
-    ) -> None:
-        self.provider_configs = provider_configs or self.default_provider_configs()
-        self.routing_policies = routing_policies or self.default_routing_policies()
-        self.providers = {
-            name: OpenAICompatibleProvider(cfg.provider, cfg.api_base, cfg.api_key_env)
-            for name, cfg in self.provider_configs.items()
-        }
+    def __init__(self, settings: ModelSettingsPayload | None = None) -> None:
         self.stub_provider = StubProvider()
+        initial_settings = settings or ModelSettingsStore().load()
+        self.reload(initial_settings)
 
-    @staticmethod
-    def default_provider_configs() -> dict[str, ProviderConfig]:
-        return {
-            "openai": ProviderConfig(
-                provider="openai",
-                api_base="https://api.openai.com/v1",
-                api_key_env="OPENAI_API_KEY",
-                model_aliases={
-                    "planner": "gpt-4o-mini",
-                    "reviewer": "gpt-4o-mini",
-                    "writer": "gpt-4o-mini",
-                },
-                priority=1,
-            ),
-            "deepseek": ProviderConfig(
-                provider="deepseek",
-                api_base="https://api.deepseek.com/v1",
-                api_key_env="DEEPSEEK_API_KEY",
-                model_aliases={
-                    "code": "deepseek-chat",
-                    "planner": "deepseek-chat",
-                },
-                priority=2,
-            ),
-            "kimi": ProviderConfig(
-                provider="kimi",
-                api_base="https://api.moonshot.cn/v1",
-                api_key_env="MOONSHOT_API_KEY",
-                model_aliases={
-                    "writer": "moonshot-v1-128k",
-                    "synthesizer": "moonshot-v1-128k",
-                },
-                priority=3,
-            ),
+    def reload(self, settings: ModelSettingsPayload) -> None:
+        self.settings = settings
+        self.provider_settings = {item.id: item for item in settings.providers}
+        self.providers = {
+            item.id: OpenAICompatibleProvider(item.id, item.api_base, item.api_key)
+            for item in settings.providers
+            if item.enabled
         }
 
-    @staticmethod
-    def default_routing_policies() -> dict[str, ModelRoutingPolicy]:
-        return {
-            "planner": ModelRoutingPolicy(
-                task_type="planner",
-                primary_model="openai:planner",
-                fallback_models=["kimi:synthesizer", "deepseek:planner"],
-            ),
-            "reviewer": ModelRoutingPolicy(
-                task_type="reviewer",
-                primary_model="openai:reviewer",
-                fallback_models=["kimi:writer"],
-            ),
-            "consistency": ModelRoutingPolicy(
-                task_type="consistency",
-                primary_model="openai:reviewer",
-                fallback_models=["deepseek:planner"],
-            ),
-            "survey_synthesizer": ModelRoutingPolicy(
-                task_type="survey_synthesizer",
-                primary_model="kimi:synthesizer",
-                fallback_models=["openai:writer"],
-            ),
-            "writer": ModelRoutingPolicy(
-                task_type="writer",
-                primary_model="kimi:writer",
-                fallback_models=["openai:writer"],
-            ),
-            "code": ModelRoutingPolicy(
-                task_type="code",
-                primary_model="deepseek:code",
-                fallback_models=["openai:writer"],
-            ),
-        }
+    def get_settings(self) -> ModelSettingsPayload:
+        return self.settings
 
     def complete(
         self,
@@ -106,26 +40,22 @@ class ModelGateway:
         *,
         system_prompt: str = "",
     ) -> GatewayResult:
-        policy = self.routing_policies.get(task_type) or ModelRoutingPolicy(
-            task_type=task_type,
-            primary_model="openai:writer",
-            fallback_models=["kimi:writer", "deepseek:planner"],
-        )
-        aliases = [policy.primary_model, *policy.fallback_models]
+        route_task = task_type if task_type in MODEL_TASK_TYPES else "writer"
+        candidates = self._resolve_candidates(route_task)
         last_error: Exception | None = None
 
-        for idx, alias in enumerate(aliases):
-            provider_name, model_key = alias.split(":", 1)
-            provider_cfg = self.provider_configs[provider_name]
-            provider = self.providers[provider_name]
-            model_name = provider_cfg.model_aliases.get(model_key, model_key)
+        for idx, provider_cfg in enumerate(candidates):
+            provider = self.providers.get(provider_cfg.id)
+            model_name = provider_cfg.models.get(route_task, "")
+            if not provider or not model_name:
+                continue
             try:
                 response = provider.chat(
                     model=model_name,
                     prompt=prompt,
                     system_prompt=system_prompt or f"You are the {task_type} agent.",
-                    temperature=policy.temperature,
-                    max_tokens=policy.max_tokens,
+                    temperature=0.2,
+                    max_tokens=4096,
                 )
                 return GatewayResult(
                     provider=response.provider,
@@ -140,8 +70,8 @@ class ModelGateway:
             model=f"offline-{task_type}",
             prompt=prompt,
             system_prompt=system_prompt or f"You are the {task_type} agent.",
-            temperature=policy.temperature,
-            max_tokens=policy.max_tokens,
+            temperature=0.2,
+            max_tokens=4096,
         )
         if last_error:
             fallback.content += f"\n\n[provider_failover] {last_error}"
@@ -155,3 +85,26 @@ class ModelGateway:
     def embedding(self, provider_name: str, text: str) -> list[float]:
         provider = self.providers.get(provider_name) or self.stub_provider
         return provider.embedding(text)
+
+    def _resolve_candidates(self, task_type: str) -> list[ModelProviderSettings]:
+        provider_configs = sorted(
+            (
+                item
+                for item in self.settings.providers
+                if item.enabled and item.models.get(task_type)
+            ),
+            key=lambda item: (item.priority, item.id),
+        )
+        if not provider_configs:
+            return []
+
+        primary_provider_id = self.settings.task_routes.get(task_type, "")
+        primary = next(
+            (item for item in provider_configs if item.id == primary_provider_id),
+            None,
+        )
+        if not primary:
+            return provider_configs
+
+        fallbacks = [item for item in provider_configs if item.id != primary.id]
+        return [primary, *fallbacks]

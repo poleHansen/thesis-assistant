@@ -526,6 +526,69 @@ textarea {
   grid-column: 1 / -1;
 }
 
+.panel__header,
+.provider-editor__header,
+.settings-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.panel__header--actions {
+  flex-wrap: wrap;
+}
+
+.settings-layout,
+.settings-grid,
+.provider-models,
+.settings-stack {
+  display: grid;
+  gap: 18px;
+}
+
+.settings-layout {
+  grid-template-columns: 1.2fr 0.8fr;
+}
+
+.settings-stack {
+  margin-top: 20px;
+}
+
+.settings-grid,
+.provider-models {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.provider-editor {
+  padding: 20px;
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.68);
+  border: 1px solid rgba(17, 17, 17, 0.06);
+}
+
+.provider-editor__header {
+  margin-bottom: 18px;
+}
+
+.field--wide {
+  grid-column: 1 / -1;
+}
+
+.checkbox-field {
+  align-content: center;
+}
+
+.checkbox-field input {
+  width: 20px;
+  height: 20px;
+}
+
+.settings-actions {
+  margin-top: 28px;
+  align-items: flex-start;
+}
+
 .back-link,
 .error-text {
   color: var(--text-soft);
@@ -539,6 +602,7 @@ textarea {
   .hero,
   .workspace-layout,
   .project-layout,
+  .settings-layout,
   .showcase,
   .provider-strip,
   .upload-grid {
@@ -581,7 +645,9 @@ textarea {
   .timeline,
   .artifact-grid,
   .deliverable-grid,
-  .summary-grid {
+  .summary-grid,
+  .settings-grid,
+  .provider-models {
     grid-template-columns: 1fr;
   }
 }

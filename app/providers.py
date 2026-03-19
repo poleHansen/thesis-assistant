@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 from dataclasses import dataclass
 from typing import Any
 from urllib import error, request
@@ -21,14 +20,14 @@ class ProviderResponse:
 
 
 class BaseProvider:
-    def __init__(self, provider_name: str, api_base: str, api_key_env: str) -> None:
+    def __init__(self, provider_name: str, api_base: str, api_key: str | None) -> None:
         self.provider_name = provider_name
         self.api_base = api_base.rstrip("/")
-        self.api_key_env = api_key_env
+        self._api_key = (api_key or "").strip()
 
     @property
     def api_key(self) -> str | None:
-        return os.getenv(self.api_key_env)
+        return self._api_key or None
 
     def available(self) -> bool:
         return bool(self.api_key)
@@ -98,7 +97,7 @@ class OpenAICompatibleProvider(BaseProvider):
 
 class StubProvider(BaseProvider):
     def __init__(self) -> None:
-        super().__init__("stub", "stub://local", "STUB_API_KEY")
+        super().__init__("stub", "stub://local", "")
 
     def available(self) -> bool:
         return True
@@ -119,4 +118,3 @@ class StubProvider(BaseProvider):
             f"根据离线规则生成占位内容：{preview}"
         )
         return ProviderResponse(provider=self.provider_name, model=model, content=content)
-

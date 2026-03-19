@@ -1,6 +1,13 @@
 export type ProjectStatus = "created" | "running" | "completed" | "failed";
 export type TemplateSourceType = "user_upload" | "library_default";
 export type UploadKind = "word_template" | "ppt_template" | "paper_pdf";
+export type ModelTaskType =
+  | "planner"
+  | "reviewer"
+  | "consistency"
+  | "survey_synthesizer"
+  | "writer"
+  | "code";
 
 export interface ProjectCreate {
   topic: string;
@@ -103,4 +110,19 @@ export interface ProjectListItem {
   project_id: string;
   status: ProjectStatus;
   updated_at: string;
+}
+
+export interface ModelProviderSettings {
+  id: string;
+  label: string;
+  api_base: string;
+  api_key: string;
+  priority: number;
+  enabled: boolean;
+  models: Partial<Record<ModelTaskType, string>>;
+}
+
+export interface ModelSettings {
+  providers: ModelProviderSettings[];
+  task_routes: Record<ModelTaskType, string>;
 }
