@@ -21,7 +21,19 @@ export const artifactLabels: Record<keyof ArtifactBundle, string> = {
   thesis_pdf: "论文 PDF",
   code_zip: "代码包",
   defense_pptx: "答辩 PPT",
-  qa_report: "审核与一致性报告",
+  qa_report: "质检报告",
+};
+
+export const artifactDescriptions: Record<keyof ArtifactBundle, string> = {
+  literature_review: "文献对比与综述汇总表",
+  innovation_report: "创新点分析与候选报告",
+  experiment_plan: "实验设计与评估计划",
+  procedure: "实验步骤与复现实验文档",
+  thesis_docx: "论文可编辑文档",
+  thesis_pdf: "论文导出 PDF",
+  code_zip: "项目代码与配置压缩包",
+  defense_pptx: "答辩演示文稿",
+  qa_report: "质量检查与一致性报告",
 };
 
 export function joinLines(values?: string[] | null) {

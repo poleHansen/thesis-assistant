@@ -108,6 +108,7 @@ export interface ProjectState {
 
 export interface ProjectListItem {
   project_id: string;
+  project_name: string;
   status: ProjectStatus;
   updated_at: string;
 }

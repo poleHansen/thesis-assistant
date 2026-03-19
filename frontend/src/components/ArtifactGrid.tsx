@@ -1,5 +1,5 @@
 import { getArtifactDownloadUrl } from "../lib/api";
-import { artifactLabels } from "../lib/format";
+import { artifactDescriptions, artifactLabels } from "../lib/format";
 import type { ArtifactBundle } from "../lib/types";
 
 interface ArtifactGridProps {
@@ -24,11 +24,11 @@ export function ArtifactGrid({ artifacts, projectId }: ArtifactGridProps) {
       </div>
       <div className="artifact-grid">
         {entries.length === 0 ? <p className="muted">项目尚未生成可下载产物。</p> : null}
-        {entries.map(([key, value]) => (
+        {entries.map(([key]) => (
           <article key={key} className="artifact-card">
             <div>
               <strong>{artifactLabels[key]}</strong>
-              <p>{value}</p>
+              <p>{artifactDescriptions[key]}</p>
             </div>
             {projectId ? (
               <a

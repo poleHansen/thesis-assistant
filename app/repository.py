@@ -125,15 +125,24 @@ class ProjectRepository:
         with closing(self._connect()) as conn:
             rows = conn.execute(
                 """
-                SELECT id, status, updated_at
+                SELECT id, status, updated_at, request_json
                 FROM projects
                 ORDER BY updated_at DESC
                 """
             ).fetchall()
-        return [
-            {"project_id": project_id, "status": status, "updated_at": updated_at}
-            for project_id, status, updated_at in rows
-        ]
+        items: list[dict[str, str]] = []
+        for project_id, status, updated_at, request_json in rows:
+            request_data = loads_json(request_json, {})
+            topic = str(request_data.get("topic", "")).strip() or "未命名项目"
+            items.append(
+                {
+                    "project_id": project_id,
+                    "project_name": topic,
+                    "status": status,
+                    "updated_at": updated_at,
+                }
+            )
+        return items
 
     def _build_state(self, state_data: dict, request_data: dict) -> ProjectState:
         request = ProjectCreate(**request_data)

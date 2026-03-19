@@ -56,7 +56,7 @@ export function WorkspacePage() {
                 onClick={() => navigate(`/projects/${project.project_id}`)}
               >
                 <div>
-                  <strong>{project.project_id}</strong>
+                  <strong>{project.project_name}</strong>
                   <p>{project.updated_at}</p>
                 </div>
                 <span className={`status-pill status-pill--${project.status}`}>
