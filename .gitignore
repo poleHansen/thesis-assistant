@@ -1,0 +1,9 @@
+__pycache__/
+.pytest_cache/
+workspace/
+tests_runtime/
+*.pyc
+*.pyo
+*.pyd
+frontend/node_modules/
+frontend/dist/
