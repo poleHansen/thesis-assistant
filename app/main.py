@@ -67,6 +67,27 @@ def update_model_settings(payload: dict) -> dict:
     return to_plain_data(settings)
 
 
+@app.post("/settings/models/test")
+def test_model_provider(payload: dict) -> dict:
+    provider_payload = payload.get("provider")
+    if not isinstance(provider_payload, dict):
+        raise HTTPException(status_code=400, detail="provider payload is required")
+
+    try:
+        provider = model_settings_store.normalize_provider(provider_payload)
+    except ModelSettingsError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if not provider.enabled:
+        raise HTTPException(status_code=400, detail="provider must be enabled for testing")
+    if not provider.api_key:
+        raise HTTPException(status_code=400, detail="provider api_key is required for testing")
+    if not gateway.pick_test_model(provider):
+        raise HTTPException(status_code=400, detail="provider must define at least one model for testing")
+
+    return to_plain_data(gateway.test_provider(provider))
+
+
 @app.post("/projects")
 def create_project(payload: dict) -> dict:
     try:

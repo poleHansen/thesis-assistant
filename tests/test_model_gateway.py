@@ -8,9 +8,16 @@ from app.providers import ProviderError, ProviderResponse
 
 
 class FakeProvider:
-    def __init__(self, provider_name: str, *, should_fail: bool = False) -> None:
+    def __init__(
+        self,
+        provider_name: str,
+        *,
+        should_fail: bool = False,
+        failure_message: str | None = None,
+    ) -> None:
         self.provider_name = provider_name
         self.should_fail = should_fail
+        self.failure_message = failure_message or f"{self.provider_name} failed"
         self.calls: list[str] = []
 
     def chat(
@@ -24,7 +31,7 @@ class FakeProvider:
     ) -> ProviderResponse:
         self.calls.append(model)
         if self.should_fail:
-            raise ProviderError(f"{self.provider_name} failed")
+            raise ProviderError(self.failure_message)
         return ProviderResponse(provider=self.provider_name, model=model, content=prompt)
 
     def embedding(self, text: str) -> list[float]:
@@ -127,6 +134,85 @@ class ModelGatewayTest(unittest.TestCase):
         self.assertEqual(primary.calls, ["planner-model"])
         self.assertEqual(secondary.calls, ["deepseek-planner"])
         self.assertEqual(tertiary.calls, [])
+
+    def test_gateway_falls_back_when_primary_times_out(self) -> None:
+        settings = ModelSettingsPayload(
+            providers=[
+                ModelProviderSettings(
+                    id="openai",
+                    label="OpenAI",
+                    api_base="https://example.com/v1",
+                    api_key="sk-openai",
+                    priority=1,
+                    enabled=True,
+                    models={"planner": "planner-model"},
+                ),
+                ModelProviderSettings(
+                    id="deepseek",
+                    label="DeepSeek",
+                    api_base="https://deepseek.example/v1",
+                    api_key="sk-deepseek",
+                    priority=2,
+                    enabled=True,
+                    models={"planner": "deepseek-planner"},
+                ),
+            ],
+            task_routes={"planner": "openai"},
+        )
+        gateway = ModelGateway(settings)
+        primary = FakeProvider(
+            "openai",
+            should_fail=True,
+            failure_message="openai request failed: timed out",
+        )
+        secondary = FakeProvider("deepseek")
+        gateway.providers = {"openai": primary, "deepseek": secondary}
+
+        result = gateway.complete("planner", "plan this")
+
+        self.assertEqual(result.provider, "deepseek")
+        self.assertEqual(result.model, "deepseek-planner")
+        self.assertTrue(result.fallback_used)
+
+    def test_gateway_returns_stub_when_all_providers_fail(self) -> None:
+        settings = ModelSettingsPayload(
+            providers=[
+                ModelProviderSettings(
+                    id="openai",
+                    label="OpenAI",
+                    api_base="https://example.com/v1",
+                    api_key="sk-openai",
+                    priority=1,
+                    enabled=True,
+                    models={"planner": "planner-model"},
+                ),
+                ModelProviderSettings(
+                    id="deepseek",
+                    label="DeepSeek",
+                    api_base="https://deepseek.example/v1",
+                    api_key="sk-deepseek",
+                    priority=2,
+                    enabled=True,
+                    models={"planner": "deepseek-planner"},
+                ),
+            ],
+            task_routes={"planner": "openai"},
+        )
+        gateway = ModelGateway(settings)
+        gateway.providers = {
+            "openai": FakeProvider("openai", should_fail=True, failure_message="openai timed out"),
+            "deepseek": FakeProvider(
+                "deepseek",
+                should_fail=True,
+                failure_message="deepseek timed out",
+            ),
+        }
+
+        result = gateway.complete("planner", "plan this")
+
+        self.assertEqual(result.provider, "stub")
+        self.assertTrue(result.fallback_used)
+        self.assertIn("provider_failover", result.content)
 
 
 if __name__ == "__main__":

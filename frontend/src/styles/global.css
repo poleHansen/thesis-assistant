@@ -571,6 +571,12 @@ textarea {
   margin-bottom: 18px;
 }
 
+.provider-editor__actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 .field--wide {
   grid-column: 1 / -1;
 }
@@ -587,6 +593,18 @@ textarea {
 .settings-actions {
   margin-top: 28px;
   align-items: flex-start;
+}
+
+.provider-test-result {
+  margin: 18px 0 4px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(17, 17, 17, 0.06);
+}
+
+.success-text {
+  color: var(--success);
 }
 
 .back-link,

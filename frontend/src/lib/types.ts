@@ -126,3 +126,15 @@ export interface ModelSettings {
   providers: ModelProviderSettings[];
   task_routes: Record<ModelTaskType, string>;
 }
+
+export interface ModelProviderTestPayload {
+  provider: ModelProviderSettings;
+}
+
+export interface ModelProviderTestResult {
+  ok: boolean;
+  provider: string;
+  model: string;
+  message: string;
+  response_preview?: string | null;
+}

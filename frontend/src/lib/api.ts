@@ -1,5 +1,7 @@
 import type {
   ArtifactBundle,
+  ModelProviderTestPayload,
+  ModelProviderTestResult,
   ModelSettings,
   ProjectCreate,
   ProjectListItem,
@@ -29,6 +31,14 @@ export function getModelSettings() {
 export function updateModelSettings(payload: ModelSettings) {
   return requestJson<ModelSettings>(`${API_BASE}/settings/models`, {
     method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function testModelProvider(payload: ModelProviderTestPayload) {
+  return requestJson<ModelProviderTestResult>(`${API_BASE}/settings/models/test`, {
+    method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });

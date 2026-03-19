@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import socket
 from dataclasses import dataclass
 from typing import Any
 from urllib import error, request
@@ -85,7 +86,7 @@ class OpenAICompatibleProvider(BaseProvider):
         try:
             with request.urlopen(req, timeout=45) as response:
                 body = json.loads(response.read().decode("utf-8"))
-        except error.URLError as exc:
+        except (error.URLError, TimeoutError, socket.timeout) as exc:
             raise ProviderError(f"{self.provider_name} request failed: {exc}") from exc
 
         try:

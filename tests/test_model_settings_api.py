@@ -88,6 +88,58 @@ class ModelSettingsApiTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 400)
 
+    def test_post_model_provider_test_rejects_missing_api_key(self) -> None:
+        payload = {
+            "provider": {
+                "id": "openai",
+                "label": "OpenAI",
+                "api_base": "https://example.com/v1",
+                "api_key": "",
+                "priority": 1,
+                "enabled": True,
+                "models": {"planner": "gpt-test"},
+            }
+        }
+
+        response = self.client.post("/settings/models/test", json=payload)
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_post_model_provider_test_returns_provider_result(self) -> None:
+        original_test_provider = self.main.gateway.test_provider
+
+        def fake_test_provider(provider):
+            return {
+                "ok": True,
+                "provider": provider.id,
+                "model": "gpt-test",
+                "message": "Provider test succeeded.",
+                "response_preview": "ok",
+            }
+
+        self.main.gateway.test_provider = fake_test_provider
+        try:
+            payload = {
+                "provider": {
+                    "id": "openai",
+                    "label": "OpenAI",
+                    "api_base": "https://example.com/v1",
+                    "api_key": "sk-test",
+                    "priority": 1,
+                    "enabled": True,
+                    "models": {"planner": "gpt-test"},
+                }
+            }
+
+            response = self.client.post("/settings/models/test", json=payload)
+        finally:
+            self.main.gateway.test_provider = original_test_provider
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["provider"], "openai")
+
 
 if __name__ == "__main__":
     unittest.main()

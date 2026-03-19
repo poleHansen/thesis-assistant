@@ -93,7 +93,7 @@ class ModelSettingsStore:
         normalized_providers: list[ModelProviderSettings] = []
         seen_ids: set[str] = set()
         for item in providers_raw:
-            provider = self._normalize_provider(item)
+            provider = self.normalize_provider(item)
             if provider.id in seen_ids:
                 raise ModelSettingsError(f"provider id '{provider.id}' must be unique")
             seen_ids.add(provider.id)
@@ -128,7 +128,7 @@ class ModelSettingsStore:
             task_routes=normalized_routes,
         )
 
-    def _normalize_provider(self, item: Any) -> ModelProviderSettings:
+    def normalize_provider(self, item: Any) -> ModelProviderSettings:
         if is_dataclass(item):
             raw = asdict(item)
         elif isinstance(item, dict):

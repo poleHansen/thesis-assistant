@@ -1,7 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
-import { getModelSettings, updateModelSettings } from "../lib/api";
-import type { ModelProviderSettings, ModelSettings, ModelTaskType } from "../lib/types";
+import { getModelSettings, testModelProvider, updateModelSettings } from "../lib/api";
+import type {
+  ModelProviderSettings,
+  ModelProviderTestResult,
+  ModelSettings,
+  ModelTaskType,
+} from "../lib/types";
 
 const taskOptions: Array<{ key: ModelTaskType; label: string }> = [
   { key: "planner", label: "Planner" },
@@ -60,10 +65,30 @@ function createProviderDraft(index: number): ModelProviderSettings {
   };
 }
 
+function getProviderKey(provider: ModelProviderSettings, index: number) {
+  return `${provider.id || "provider"}-${index}`;
+}
+
+function formatRequestError(error: Error) {
+  try {
+    const parsed = JSON.parse(error.message) as { detail?: string };
+    if (parsed.detail) {
+      return parsed.detail;
+    }
+  } catch {
+    return error.message;
+  }
+  return error.message;
+}
+
 export function SettingsPage() {
   const queryClient = useQueryClient();
   const [draft, setDraft] = useState<ModelSettings | null>(null);
   const [feedback, setFeedback] = useState<string>("");
+  const [testingProviderKey, setTestingProviderKey] = useState<string>("");
+  const [providerTestResults, setProviderTestResults] = useState<
+    Record<string, ModelProviderTestResult>
+  >({});
 
   const settingsQuery = useQuery({
     queryKey: ["model-settings"],
@@ -79,7 +104,37 @@ export function SettingsPage() {
       await queryClient.invalidateQueries({ queryKey: ["model-settings"] });
     },
     onError: (error: Error) => {
-      setFeedback(error.message);
+      setFeedback(formatRequestError(error));
+    },
+  });
+
+  const testMutation = useMutation({
+    mutationFn: ({
+      provider,
+      providerKey,
+    }: {
+      provider: ModelProviderSettings;
+      providerKey: string;
+    }) => testModelProvider({ provider }),
+    onMutate: ({ providerKey }) => {
+      setTestingProviderKey(providerKey);
+    },
+    onSuccess: (result, { providerKey }) => {
+      setProviderTestResults((current) => ({ ...current, [providerKey]: result }));
+      setTestingProviderKey("");
+    },
+    onError: (error: Error, { provider, providerKey }) => {
+      setProviderTestResults((current) => ({
+        ...current,
+        [providerKey]: {
+          ok: false,
+          provider: provider.id,
+          model: "",
+          message: formatRequestError(error),
+          response_preview: null,
+        },
+      }));
+      setTestingProviderKey("");
     },
   });
 
@@ -163,6 +218,11 @@ export function SettingsPage() {
     await saveMutation.mutateAsync(draft);
   }
 
+  async function handleTestProvider(provider: ModelProviderSettings, index: number) {
+    const providerKey = getProviderKey(provider, index);
+    await testMutation.mutateAsync({ provider, providerKey });
+  }
+
   return (
     <div className="page page--settings">
       <section className="page__hero">
@@ -196,13 +256,25 @@ export function SettingsPage() {
                 <article key={`${provider.id}-${index}`} className="provider-editor">
                   <div className="provider-editor__header">
                     <strong>{provider.label || provider.id || `Provider ${index + 1}`}</strong>
-                    <button
-                      type="button"
-                      className="button button--ghost"
-                      onClick={() => removeProvider(index)}
-                    >
-                      Remove
-                    </button>
+                    <div className="provider-editor__actions">
+                      <button
+                        type="button"
+                        className="button button--ghost"
+                        onClick={() => handleTestProvider(provider, index)}
+                        disabled={testingProviderKey === getProviderKey(provider, index)}
+                      >
+                        {testingProviderKey === getProviderKey(provider, index)
+                          ? "Testing..."
+                          : "Test Connection"}
+                      </button>
+                      <button
+                        type="button"
+                        className="button button--ghost"
+                        onClick={() => removeProvider(index)}
+                      >
+                        Remove
+                      </button>
+                    </div>
                   </div>
 
                   <div className="settings-grid">
@@ -257,6 +329,30 @@ export function SettingsPage() {
                       />
                     </label>
                   </div>
+
+                  {providerTestResults[getProviderKey(provider, index)] ? (
+                    <div className="provider-test-result">
+                      <p
+                        className={
+                          providerTestResults[getProviderKey(provider, index)].ok
+                            ? "success-text"
+                            : "error-text"
+                        }
+                      >
+                        {providerTestResults[getProviderKey(provider, index)].message}
+                      </p>
+                      <p className="muted">
+                        Provider: {providerTestResults[getProviderKey(provider, index)].provider} |
+                        Model: {providerTestResults[getProviderKey(provider, index)].model || "N/A"}
+                      </p>
+                      {providerTestResults[getProviderKey(provider, index)].response_preview ? (
+                        <p className="muted">
+                          Preview:{" "}
+                          {providerTestResults[getProviderKey(provider, index)].response_preview}
+                        </p>
+                      ) : null}
+                    </div>
+                  ) : null}
 
                   <div className="provider-models">
                     {taskOptions.map((task) => (

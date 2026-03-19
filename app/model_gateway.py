@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app.domain import MODEL_TASK_TYPES, ModelProviderSettings, ModelSettingsPayload
+from app.domain import (
+    MODEL_PROVIDER_TEST_TASK_ORDER,
+    MODEL_TASK_TYPES,
+    ModelProviderSettings,
+    ModelProviderTestResult,
+    ModelSettingsPayload,
+)
 from app.model_settings import ModelSettingsStore
 from app.providers import OpenAICompatibleProvider, ProviderError, StubProvider
 
@@ -32,6 +38,48 @@ class ModelGateway:
 
     def get_settings(self) -> ModelSettingsPayload:
         return self.settings
+
+    def test_provider(self, provider_settings: ModelProviderSettings) -> ModelProviderTestResult:
+        model_name = self.pick_test_model(provider_settings)
+        if not model_name:
+            return ModelProviderTestResult(
+                ok=False,
+                provider=provider_settings.id,
+                model="",
+                message="No model is configured for provider testing.",
+                response_preview=None,
+            )
+
+        provider = OpenAICompatibleProvider(
+            provider_settings.id,
+            provider_settings.api_base,
+            provider_settings.api_key,
+        )
+        try:
+            response = provider.chat(
+                model=model_name,
+                prompt="Reply with a short acknowledgement for this connectivity test.",
+                system_prompt="You are a connectivity test assistant.",
+                temperature=0.0,
+                max_tokens=32,
+            )
+        except ProviderError as exc:
+            return ModelProviderTestResult(
+                ok=False,
+                provider=provider_settings.id,
+                model=model_name,
+                message=str(exc),
+                response_preview=None,
+            )
+
+        preview = response.content.strip().replace("\n", " ")[:200] or None
+        return ModelProviderTestResult(
+            ok=True,
+            provider=response.provider,
+            model=response.model,
+            message="Provider test succeeded.",
+            response_preview=preview,
+        )
 
     def complete(
         self,
@@ -85,6 +133,14 @@ class ModelGateway:
     def embedding(self, provider_name: str, text: str) -> list[float]:
         provider = self.providers.get(provider_name) or self.stub_provider
         return provider.embedding(text)
+
+    @staticmethod
+    def pick_test_model(provider_settings: ModelProviderSettings) -> str:
+        for task in MODEL_PROVIDER_TEST_TASK_ORDER:
+            model_name = provider_settings.models.get(task, "").strip()
+            if model_name:
+                return model_name
+        return ""
 
     def _resolve_candidates(self, task_type: str) -> list[ModelProviderSettings]:
         provider_configs = sorted(

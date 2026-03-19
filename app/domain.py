@@ -14,6 +14,14 @@ MODEL_TASK_TYPES = (
     "writer",
     "code",
 )
+MODEL_PROVIDER_TEST_TASK_ORDER = (
+    "planner",
+    "writer",
+    "reviewer",
+    "consistency",
+    "survey_synthesizer",
+    "code",
+)
 
 
 @dataclass(slots=True)
@@ -63,6 +71,20 @@ class ModelProviderSettings:
 class ModelSettingsPayload:
     providers: list[ModelProviderSettings] = field(default_factory=list)
     task_routes: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class ModelProviderTestPayload:
+    provider: ModelProviderSettings
+
+
+@dataclass(slots=True)
+class ModelProviderTestResult:
+    ok: bool
+    provider: str
+    model: str
+    message: str
+    response_preview: str | None = None
 
 
 @dataclass(slots=True)
