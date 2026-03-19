@@ -1,0 +1,2 @@
+"""thesis-assistant application package."""
+
