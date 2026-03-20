@@ -13,6 +13,8 @@ from app.agents import (
     ReaderAgent,
     RetrieverAgent,
     TopicPlannerAgent,
+    _build_gap_analysis_summary,
+    _estimate_candidate_scores,
 )
 from app.domain import InnovationCandidate, LiteratureRecord, ProjectCreate, ProjectState
 from app.model_gateway import ModelGateway
@@ -134,7 +136,107 @@ class WorkflowTest(unittest.TestCase):
         self.assertTrue(all(candidate.analysis_basis for candidate in result.innovation_candidates))
         self.assertTrue(all(candidate.supporting_evidence for candidate in result.innovation_candidates))
         self.assertIn("gap_analysis", result.result_schema)
+        self.assertTrue(result.result_schema["gap_analysis"].get("method_gaps"))
+        self.assertTrue(result.result_schema["gap_analysis"].get("support_evidence_map"))
         self.assertTrue(result.result_schema.get("gap_analysis_overview"))
+
+    def test_gap_analysis_summary_contains_structured_gap_and_evidence_maps(self) -> None:
+        records = [
+            LiteratureRecord(
+                source="semantic_scholar",
+                title=f"Paper {index}",
+                authors="Tester",
+                year=2025,
+                abstract="Abstract",
+                doi_or_url=f"https://example.com/{index}",
+                problem="中文文本分类标准设置" if index < 3 else "中文文本分类跨域部署",
+                method="Transformer 编码器, 轻量分类头" if index < 3 else "CNN 编码器, 对比学习模块",
+                dataset="THUCNews" if index < 4 else "Fudan",
+                metrics="Accuracy, F1" if index < 4 else "Accuracy, F1, Robustness",
+                conclusion="方法有效",
+                limitations="缺少鲁棒性评测, 缺少低资源场景验证" if index % 2 else "样本增强不足, 部署成本较高",
+                confidence_score=0.82,
+            )
+            for index in range(1, 6)
+        ]
+        state = ProjectState(
+            project_id="project-gap-summary",
+            request=ProjectCreate(topic="中文文本分类算法"),
+            literature_records=records,
+        )
+
+        summary = _build_gap_analysis_summary(state)
+
+        self.assertEqual(summary.get("mode"), "real")
+        self.assertTrue(summary.get("method_gaps"))
+        self.assertTrue(summary.get("data_gaps"))
+        self.assertTrue(summary.get("scenario_gaps"))
+        self.assertTrue(summary.get("evaluation_gaps"))
+        self.assertTrue(summary.get("support_evidence_map", {}).get("methods"))
+        self.assertTrue(summary.get("contrast_evidence_map", {}).get("metrics"))
+
+    def test_estimate_candidate_scores_prefers_real_evidence_over_fallback(self) -> None:
+        support_records = [
+            LiteratureRecord(
+                source="semantic_scholar",
+                title="Paper A",
+                authors="Tester",
+                year=2025,
+                abstract="Abstract",
+                doi_or_url="https://example.com/a",
+                problem="中文文本分类",
+                method="Transformer 编码器",
+                dataset="THUCNews",
+                metrics="Accuracy, F1",
+                conclusion="方法有效",
+                limitations="缺少鲁棒性评测",
+                confidence_score=0.86,
+            ),
+            LiteratureRecord(
+                source="semantic_scholar",
+                title="Paper B",
+                authors="Tester",
+                year=2025,
+                abstract="Abstract",
+                doi_or_url="https://example.com/b",
+                problem="中文文本分类",
+                method="Transformer 编码器, 轻量分类头",
+                dataset="THUCNews",
+                metrics="Accuracy, F1",
+                conclusion="方法有效",
+                limitations="复现成本较高",
+                confidence_score=0.81,
+            ),
+        ]
+        contrast_records = [
+            LiteratureRecord(
+                source="semantic_scholar",
+                title="Paper C",
+                authors="Tester",
+                year=2025,
+                abstract="Abstract",
+                doi_or_url="https://example.com/c",
+                problem="中文文本分类",
+                method="CNN",
+                dataset="Fudan",
+                metrics="Accuracy",
+                conclusion="方法有效",
+                limitations="局限较少",
+                confidence_score=0.7,
+            )
+        ]
+        summary = {
+            "common_metrics": ["Accuracy", "F1"],
+            "needs_review_count": 0,
+            "method_gaps": [{"scarcity_score": 8.0, "coverage_score": 7.5}],
+        }
+
+        real_scores = _estimate_candidate_scores("method_gap", "real", support_records, contrast_records, summary)
+        fallback_scores = _estimate_candidate_scores("method_gap", "fallback", support_records[:1], contrast_records, summary)
+
+        self.assertGreater(real_scores["evidence_strength"], fallback_scores["evidence_strength"])
+        self.assertGreater(real_scores["novelty_score"], fallback_scores["novelty_score"])
+        self.assertLess(real_scores["risk_score"], fallback_scores["risk_score"])
 
     def test_gap_analyst_falls_back_when_structured_evidence_is_insufficient(self) -> None:
         state = ProjectState(
@@ -212,6 +314,7 @@ class WorkflowTest(unittest.TestCase):
         self.assertEqual(judged.selected_innovation.claim, "候选 A")
         self.assertGreater(judged.innovation_candidates[0].overall_score, judged.innovation_candidates[1].overall_score)
         self.assertTrue(judged.selected_innovation.recommendation_reason)
+        self.assertIn("依据为", judged.selected_innovation.recommendation_reason)
 
     def test_feasibility_reviewer_warns_for_fallback_and_low_evidence(self) -> None:
         state = ProjectState(

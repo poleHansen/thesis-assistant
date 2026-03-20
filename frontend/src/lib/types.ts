@@ -109,6 +109,58 @@ export interface InnovationCandidate {
   verification_plan: string;
 }
 
+export interface GapSummaryEntry {
+  gap_type: string;
+  focus: string;
+  description: string;
+  basis: string[];
+  supporting_papers: string[];
+  contrast_papers: string[];
+  supporting_evidence: string[];
+  contrast_evidence: string[];
+  scarcity_score: number;
+  coverage_score: number;
+}
+
+export interface EvidenceMapEntry {
+  phrase: string;
+  supporting_papers: string[];
+  evidence: string[];
+}
+
+export interface GapAnalysisSummary {
+  mode: "real" | "fallback";
+  valid_record_count: number;
+  record_count: number;
+  common_methods: string[];
+  common_datasets: string[];
+  common_metrics: string[];
+  common_limitations: string[];
+  common_problems: string[];
+  rare_methods: string[];
+  rare_datasets: string[];
+  rare_metrics: string[];
+  method_diversity: number;
+  dataset_diversity: number;
+  metric_diversity: number;
+  needs_review_count: number;
+  method_gaps: GapSummaryEntry[];
+  data_gaps: GapSummaryEntry[];
+  scenario_gaps: GapSummaryEntry[];
+  evaluation_gaps: GapSummaryEntry[];
+  support_evidence_map: Record<string, EvidenceMapEntry[]>;
+  contrast_evidence_map: Record<string, EvidenceMapEntry[]>;
+  coverage_gaps: Record<string, string[]>;
+}
+
+export interface InnovationRecommendation {
+  selected_claim: string;
+  selected_gap_type: string;
+  selected_reason: string;
+  runner_up_claim: string;
+  runner_up_score: number;
+}
+
 export interface ExperimentPlan {
   dataset: string[];
   baselines: string[];
@@ -146,7 +198,12 @@ export interface ProjectState {
   innovation_candidates: InnovationCandidate[];
   selected_innovation?: InnovationCandidate | null;
   experiment_plan?: ExperimentPlan | null;
-  result_schema: Record<string, unknown>;
+  result_schema: {
+    gap_analysis?: GapAnalysisSummary;
+    gap_analysis_overview?: string;
+    innovation_recommendation?: InnovationRecommendation;
+    [key: string]: unknown;
+  };
   generated_code_files: Record<string, string>;
   paper_outline: string[];
   paper_sections: Record<string, string>;

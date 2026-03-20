@@ -150,7 +150,7 @@ def _build_analysis_basis(summary_texts: list[str], supporting_records: list[Lit
     return basis[:limit]
 
 
-def _build_supporting_evidence(records: list[LiteratureRecord], preferred_fields: list[str], limit: int = 2) -> list[str]:
+def _build_supporting_evidence(records: list[LiteratureRecord], preferred_fields: list[str], limit: int = 3) -> list[str]:
     return _dedupe_preserve_order([_short_evidence_text(record, preferred_fields) for record in records], limit=limit)
 
 
@@ -223,6 +223,71 @@ def _pick_support_records(records: list[LiteratureRecord], limit: int = 6) -> li
     )[:limit]
 
 
+def _evidence_map_for_phrases(
+    records: list[LiteratureRecord],
+    field_name: str,
+    phrases: list[str],
+    preferred_fields: list[str],
+    *,
+    limit: int = 3,
+) -> list[dict[str, object]]:
+    evidence_items: list[dict[str, object]] = []
+    for phrase in phrases:
+        matched = [
+            record
+            for record in records
+            if phrase.lower() in ((getattr(record, field_name, "") or "").lower())
+        ][:limit]
+        if not matched:
+            continue
+        evidence_items.append(
+            {
+                "phrase": phrase,
+                "supporting_papers": _record_titles(matched, limit=limit),
+                "evidence": _build_supporting_evidence(matched, preferred_fields, limit=limit),
+            }
+        )
+    return evidence_items
+
+
+def _gap_entry(
+    *,
+    gap_type: str,
+    focus: str,
+    description: str,
+    basis: list[str],
+    supporting_records: list[LiteratureRecord],
+    contrast_records: list[LiteratureRecord],
+    preferred_support_fields: list[str],
+    preferred_contrast_fields: list[str],
+) -> dict[str, object]:
+    support_weight = sum(_record_weight(record) for record in supporting_records)
+    contrast_weight = sum(_record_weight(record) for record in contrast_records)
+    scarcity_score = round(max(0.0, min(10.0, 5.0 + support_weight - contrast_weight * 0.7)), 2)
+    coverage_score = round(max(0.0, min(10.0, support_weight + len(supporting_records) * 0.6)), 2)
+    return {
+        "gap_type": gap_type,
+        "focus": focus,
+        "description": description,
+        "basis": _dedupe_preserve_order(basis, limit=3),
+        "supporting_papers": _record_titles(supporting_records, limit=4),
+        "contrast_papers": _record_titles(contrast_records, limit=3),
+        "supporting_evidence": _build_supporting_evidence(supporting_records, preferred_support_fields, limit=3),
+        "contrast_evidence": _build_contrast_evidence(contrast_records, preferred_contrast_fields, limit=2),
+        "scarcity_score": scarcity_score,
+        "coverage_score": coverage_score,
+    }
+
+
+def _top_gap_entry(summary: dict[str, object], key: str) -> dict[str, object]:
+    entries = summary.get(key, [])
+    if isinstance(entries, list):
+        for entry in entries:
+            if isinstance(entry, dict):
+                return entry
+    return {}
+
+
 def _build_gap_analysis_summary(state: ProjectState) -> dict[str, object]:
     valid_records = [
         record for record in state.literature_records if not record.is_fallback and record.confidence_score >= 0.45
@@ -250,6 +315,117 @@ def _build_gap_analysis_summary(state: ProjectState) -> dict[str, object]:
         minimum=1,
         limit=6,
     )
+    method_focus = [phrase for phrase, _ in weighted_methods[:2]]
+    dataset_focus = [phrase for phrase, _ in weighted_datasets[:2]]
+    metric_focus = [phrase for phrase, _ in weighted_metrics[:2]]
+    rare_methods = [phrase for phrase, _ in weighted_methods[2:5]]
+    rare_datasets = [phrase for phrase, _ in weighted_datasets[2:5]]
+    rare_metrics = [phrase for phrase, _ in weighted_metrics[2:5]]
+    method_support = _records_with_signals(
+        analysis_records,
+        ["method", "limitations"],
+        method_focus + ["复杂", "复现", "效率", "部署", "lightweight", "latency", "参数"],
+        minimum=1,
+        limit=4,
+    ) or analysis_records[:3]
+    method_contrast = _records_without_signals(
+        analysis_records,
+        ["limitations"],
+        ["复杂", "复现", "效率", "部署", "lightweight", "latency", "参数"],
+        limit=3,
+    ) or analysis_records[:2]
+    data_support = _records_with_signals(
+        analysis_records,
+        ["dataset", "limitations"],
+        dataset_focus + ["低资源", "样本", "增强", "模态", "不平衡", "scarce", "augmentation", "few-shot"],
+        minimum=1,
+        limit=4,
+    ) or analysis_records[:3]
+    data_contrast = _records_without_signals(
+        analysis_records,
+        ["limitations"],
+        ["低资源", "样本", "增强", "模态", "不平衡", "scarce", "augmentation", "few-shot"],
+        limit=3,
+    ) or analysis_records[:2]
+    evaluation_support = _records_with_signals(
+        analysis_records,
+        ["metrics", "limitations", "conclusion"],
+        metric_focus + ["鲁棒", "robust", "可解释", "解释", "ablation", "消融", "效率", "error analysis", "案例"],
+        minimum=1,
+        limit=4,
+    ) or analysis_records[:3]
+    evaluation_contrast = _records_without_signals(
+        analysis_records,
+        ["metrics", "limitations"],
+        ["鲁棒", "robust", "可解释", "解释", "ablation", "消融", "效率", "error analysis", "案例"],
+        limit=3,
+    ) or analysis_records[:2]
+    scenario_contrast = _records_without_signals(
+        analysis_records,
+        ["problem", "limitations"],
+        scenario_keywords,
+        limit=3,
+    ) or analysis_records[:2]
+    method_gaps = [
+        _gap_entry(
+            gap_type="method_gap",
+            focus=f"{method_focus[0]} 与 {(rare_methods[0] if rare_methods else '轻量模块')} 组合改造",
+            description="主流方法高度集中，但兼顾复现、效率或部署约束的组合改造较少。",
+            basis=[
+                f"主流方法集中在 {('、'.join(method_focus) or '少数固定路线')}，方法多样性为 {len(weighted_methods)}。",
+                f"常见局限反复提到 {('、'.join([phrase for phrase, _ in weighted_limitations[:2]]) or '效率与复现')}，说明方法改造空间真实存在。",
+            ],
+            supporting_records=method_support,
+            contrast_records=method_contrast,
+            preferred_support_fields=["limitations", "method", "evidence_quote"],
+            preferred_contrast_fields=["method", "metrics", "conclusion"],
+        )
+    ]
+    data_gaps = [
+        _gap_entry(
+            gap_type="data_gap",
+            focus=f"{(dataset_focus[0] if dataset_focus else '主流数据集')} 外数据补强",
+            description="数据集覆盖集中，低资源样本、增强策略或分布变化设置不足。",
+            basis=[
+                f"数据集主要集中在 {('、'.join(dataset_focus) or '少量公开数据集')}，数据多样性为 {len(weighted_datasets)}。",
+                "多篇论文在局限中提到样本不足、增强不足或分布变化问题，说明数据 gap 具有共性。",
+            ],
+            supporting_records=data_support,
+            contrast_records=data_contrast,
+            preferred_support_fields=["dataset", "limitations", "evidence_quote"],
+            preferred_contrast_fields=["dataset", "method", "conclusion"],
+        )
+    ]
+    scenario_gaps = [
+        _gap_entry(
+            gap_type="scenario_gap",
+            focus="低资源、跨域与真实部署场景",
+            description="多数研究停留在标准实验设置，真实应用约束覆盖不足。",
+            basis=[
+                f"场景信号词命中的支撑论文数为 {len(scenario_records)}，说明场景约束并非个别现象。",
+                f"主流问题表述集中在 {('、'.join(_top_phrases(analysis_records, 'problem')[:2]) or '标准研究设置')}，与真实应用约束之间存在落差。",
+            ],
+            supporting_records=scenario_records or analysis_records[:3],
+            contrast_records=scenario_contrast,
+            preferred_support_fields=["limitations", "problem", "conclusion"],
+            preferred_contrast_fields=["problem", "method", "conclusion"],
+        )
+    ]
+    evaluation_gaps = [
+        _gap_entry(
+            gap_type="evaluation_gap",
+            focus=f"{(metric_focus[0] if metric_focus else '常规指标')} 之外的鲁棒性与误差分析",
+            description="评价大多集中在常规指标，鲁棒性、可解释性和错误分析覆盖不足。",
+            basis=[
+                f"主流评测集中在 {('、'.join(metric_focus) or '常规指标')}，评测多样性为 {len(weighted_metrics)}。",
+                f"局限项多次出现 {('、'.join([phrase for phrase, _ in weighted_limitations[:2]]) or '评测不足')}，说明评价缺口可追溯。",
+            ],
+            supporting_records=evaluation_support,
+            contrast_records=evaluation_contrast,
+            preferred_support_fields=["limitations", "metrics", "evidence_quote"],
+            preferred_contrast_fields=["metrics", "conclusion", "method"],
+        )
+    ]
     return {
         "mode": "real" if len(valid_records) >= 3 else "fallback",
         "valid_record_count": len(valid_records),
@@ -259,14 +435,31 @@ def _build_gap_analysis_summary(state: ProjectState) -> dict[str, object]:
         "common_metrics": [phrase for phrase, _ in weighted_metrics[:4]],
         "common_limitations": [phrase for phrase, _ in weighted_limitations[:5]],
         "common_problems": _top_phrases(analysis_records, "problem"),
+        "rare_methods": rare_methods,
+        "rare_datasets": rare_datasets,
+        "rare_metrics": rare_metrics,
         "method_diversity": len(weighted_methods),
         "dataset_diversity": len(weighted_datasets),
         "metric_diversity": len(weighted_metrics),
         "needs_review_count": len([record for record in analysis_records if record.needs_review]),
+        "method_gaps": method_gaps,
+        "data_gaps": data_gaps,
+        "scenario_gaps": scenario_gaps,
+        "evaluation_gaps": evaluation_gaps,
+        "support_evidence_map": {
+            "methods": _evidence_map_for_phrases(analysis_records, "method", method_focus, ["method", "limitations"]),
+            "datasets": _evidence_map_for_phrases(analysis_records, "dataset", dataset_focus, ["dataset", "limitations"]),
+            "metrics": _evidence_map_for_phrases(analysis_records, "metrics", metric_focus, ["metrics", "limitations"]),
+        },
+        "contrast_evidence_map": {
+            "methods": _evidence_map_for_phrases(analysis_records, "method", rare_methods or method_focus[:1], ["method", "conclusion"]),
+            "datasets": _evidence_map_for_phrases(analysis_records, "dataset", rare_datasets or dataset_focus[:1], ["dataset", "conclusion"]),
+            "metrics": _evidence_map_for_phrases(analysis_records, "metrics", rare_metrics or metric_focus[:1], ["metrics", "conclusion"]),
+        },
         "coverage_gaps": {
-            "method": [phrase for phrase, _ in weighted_methods[2:5]],
-            "data": [phrase for phrase, _ in weighted_datasets[2:5]],
-            "evaluation": [phrase for phrase, _ in weighted_metrics[2:5]],
+            "method": rare_methods,
+            "data": rare_datasets,
+            "evaluation": rare_metrics,
             "scenario": _record_titles(scenario_records, limit=3),
         },
     }
@@ -289,24 +482,43 @@ def _estimate_candidate_scores(
         "scenario_gap": {"novelty": 7.8, "feasibility": 7.0, "risk": 5.8, "cost": 6.0, "fit": 7.4},
         "evaluation_gap": {"novelty": 7.1, "feasibility": 8.1, "risk": 4.6, "cost": 4.2, "fit": 8.4},
     }[gap_type]
+    gap_summary_key = {
+        "method_gap": "method_gaps",
+        "data_gap": "data_gaps",
+        "scenario_gap": "scenario_gaps",
+        "evaluation_gap": "evaluation_gaps",
+    }[gap_type]
+    gap_entry = _top_gap_entry(summary, gap_summary_key)
     support_weight = sum(_record_weight(record) for record in supporting_records)
     contrast_weight = sum(_record_weight(record) for record in contrast_records)
     support_count = len(supporting_records)
     contrast_count = len(contrast_records)
     common_metrics = list(summary.get("common_metrics", []))
     needs_review_count = int(summary.get("needs_review_count", 0) or 0)
-    evidence_strength = 4.2 + support_weight * 1.35 + contrast_weight * 0.55
+    scarcity_score = float(gap_entry.get("scarcity_score", 5.0) or 5.0)
+    coverage_score = float(gap_entry.get("coverage_score", 5.0) or 5.0)
+    evidence_strength = 3.8 + support_weight * 1.25 + contrast_weight * 0.45 + coverage_score * 0.18
     if evidence_mode == "fallback":
-        evidence_strength -= 2.6
+        evidence_strength -= 3.0
     if common_metrics:
         evidence_strength += 0.4
     if needs_review_count:
         evidence_strength -= min(1.2, needs_review_count * 0.2)
-    novelty = base_scores["novelty"] + (0.3 if evidence_mode == "real" else -0.5)
-    feasibility = base_scores["feasibility"] + min(support_count, 3) * 0.2 - max(0, contrast_count - support_count) * 0.15
-    risk = base_scores["risk"] + (0.9 if evidence_mode == "fallback" else 0.0) + max(0, 2 - support_count) * 0.3
-    cost = base_scores["cost"] + (0.4 if gap_type == "data_gap" else 0.0)
-    fit = base_scores["fit"] + (0.3 if gap_type in {"evaluation_gap", "scenario_gap"} else 0.0)
+    novelty = base_scores["novelty"] + scarcity_score * 0.18 + (0.15 if evidence_mode == "real" else -0.8)
+    feasibility = (
+        base_scores["feasibility"]
+        + min(support_count, 3) * 0.25
+        + coverage_score * 0.08
+        - max(0, contrast_count - support_count) * 0.18
+    )
+    risk = (
+        base_scores["risk"]
+        + (1.2 if evidence_mode == "fallback" else 0.0)
+        + max(0, 2 - support_count) * 0.35
+        + max(0.0, 6.0 - evidence_strength) * 0.18
+    )
+    cost = base_scores["cost"] + (0.4 if gap_type == "data_gap" else 0.0) + (0.25 if gap_type == "scenario_gap" else 0.0)
+    fit = base_scores["fit"] + (0.3 if gap_type in {"evaluation_gap", "scenario_gap"} else 0.0) - (0.35 if evidence_mode == "fallback" else 0.0)
     return {
         "novelty_score": _clamp_score(novelty),
         "feasibility_score": _clamp_score(feasibility),
@@ -347,9 +559,21 @@ def _build_gap_overview(summary: dict[str, object], candidates: list[InnovationC
     if not candidates:
         return "当前未形成可审核的 gap 候选。"
     strongest = max(candidates, key=lambda item: item.evidence_strength)
+    gap_entry = _top_gap_entry(
+        summary,
+        {
+            "method_gap": "method_gaps",
+            "data_gap": "data_gaps",
+            "scenario_gap": "scenario_gaps",
+            "evaluation_gap": "evaluation_gaps",
+        }.get(strongest.gap_type, ""),
+    )
+    description = str(gap_entry.get("description", _gap_type_summary(strongest.gap_type)))
+    focus = str(gap_entry.get("focus", "待补充"))
     return (
         f"最明显的 gap 类型是{_format_gap_label(strongest.gap_type)}，"
-        f"原因是{_gap_type_summary(strongest.gap_type)}；"
+        f"原因是{description}；"
+        f"重点缺口聚焦在{focus}；"
         f"主流方法集中在{('、'.join(list(summary.get('common_methods', []))[:2]) or '待补充')}，"
         f"主流评测集中在{('、'.join(list(summary.get('common_metrics', []))[:2]) or '待补充')}。"
     )
@@ -363,28 +587,22 @@ def _build_method_gap_candidate(
 ) -> InnovationCandidate | None:
     common_methods = list(summary.get("common_methods", []))
     common_metrics = list(summary.get("common_metrics", []))
-    limitation_signals = ["复杂", "复现", "效率", "部署", "lightweight", "cost", "latency", "参数"]
-    support_records = _records_with_signals(records, ["method", "limitations"], common_methods[:2] + limitation_signals, minimum=2)
-    if not support_records and evidence_mode == "real":
-        support_records = records[:2]
+    gap_entry = _top_gap_entry(summary, "method_gaps")
+    support_titles = set(gap_entry.get("supporting_papers", []))
+    contrast_titles = set(gap_entry.get("contrast_papers", []))
+    support_records = [record for record in records if record.title in support_titles] or records[:2]
     if not support_records:
         return None
-    contrast_records = _records_without_signals(records, ["limitations"], limitation_signals, limit=3) or records[:3]
+    contrast_records = [record for record in records if record.title in contrast_titles] or records[:3]
     dominant_method = common_methods[0] if common_methods else "主流方法"
-    secondary_method = common_methods[1] if len(common_methods) > 1 else "辅助模块"
-    analysis_basis = _build_analysis_basis(
-        [
-            f"方法侧证据显示主流路线集中在 {dominant_method}，组合到 {secondary_method} 的论文数量较少。",
-            f"支撑论文的 limitations 多次提到复现、效率或部署约束，说明方法改造仍有空间。",
-        ],
-        support_records,
-    )
+    focus = str(gap_entry.get("focus", f"{dominant_method} 组合改造"))
+    basis_texts = [str(item) for item in gap_entry.get("basis", []) if str(item).strip()]
+    analysis_basis = _build_analysis_basis(basis_texts, support_records)
     return _candidate_payload(
         gap_type="method_gap",
-        claim=f"面向 {topic} 的 {dominant_method} 与 {secondary_method} 轻量协同改造方案",
+        claim=f"面向 {topic} 的 {focus} 方案",
         novelty_reason=(
-            f"现有研究主要沿着 {dominant_method} 展开，少量工作涉及 {secondary_method}，"
-            "但对轻量协同、模块裁剪和复现友好设计的组合改造仍不充分。"
+            f"现有研究主要沿着 {dominant_method} 展开，{str(gap_entry.get('description', '但兼顾轻量协同和复现友好的改造仍不充分。'))}"
         ),
         rare_reason=(
             f"主流论文更优先优化 {('、'.join(common_metrics[:2])) or '常规性能指标'}，"
@@ -397,16 +615,8 @@ def _build_method_gap_candidate(
         evidence_mode=evidence_mode,
         summary=summary,
         analysis_basis=analysis_basis if evidence_mode == "real" else [],
-        supporting_evidence=(
-            _build_supporting_evidence(support_records, ["limitations", "method", "evidence_quote"])
-            if evidence_mode == "real"
-            else []
-        ),
-        contrast_evidence=(
-            _build_contrast_evidence(contrast_records, ["method", "metrics", "conclusion"])
-            if evidence_mode == "real"
-            else []
-        ),
+        supporting_evidence=([str(item) for item in gap_entry.get("supporting_evidence", [])] if evidence_mode == "real" else []),
+        contrast_evidence=([str(item) for item in gap_entry.get("contrast_evidence", [])] if evidence_mode == "real" else []),
     )
 
 
@@ -417,27 +627,22 @@ def _build_data_gap_candidate(
     evidence_mode: str,
 ) -> InnovationCandidate | None:
     common_datasets = list(summary.get("common_datasets", []))
-    limitation_signals = ["低资源", "样本", "增强", "模态", "不平衡", "scarce", "augmentation", "few-shot"]
-    support_records = _records_with_signals(records, ["dataset", "limitations"], common_datasets[:2] + limitation_signals, minimum=2)
-    if not support_records and evidence_mode == "real" and int(summary.get("dataset_diversity", 0) or 0) <= 2:
-        support_records = records[:2]
+    gap_entry = _top_gap_entry(summary, "data_gaps")
+    support_titles = set(gap_entry.get("supporting_papers", []))
+    contrast_titles = set(gap_entry.get("contrast_papers", []))
+    support_records = [record for record in records if record.title in support_titles] or records[:2]
     if not support_records:
         return None
-    contrast_records = _records_without_signals(records, ["limitations"], limitation_signals, limit=3) or records[:3]
+    contrast_records = [record for record in records if record.title in contrast_titles] or records[:3]
     dominant_dataset = common_datasets[0] if common_datasets else "主流数据集"
-    analysis_basis = _build_analysis_basis(
-        [
-            f"数据侧证据显示当前研究主要围绕 {('、'.join(common_datasets[:2])) or dominant_dataset} 展开，数据覆盖较窄。",
-            "多篇支撑论文同时提到样本不足、增强不足或分布变化问题，说明数据 gap 真实存在。",
-        ],
-        support_records,
-    )
+    focus = str(gap_entry.get("focus", f"{dominant_dataset} 外数据补强"))
+    analysis_basis = _build_analysis_basis([str(item) for item in gap_entry.get("basis", [])], support_records)
     return _candidate_payload(
         gap_type="data_gap",
-        claim=f"面向 {topic} 的 {dominant_dataset} 外样本补强与增强策略方案",
+        claim=f"面向 {topic} 的 {focus} 方案",
         novelty_reason=(
             f"当前文献多围绕 {('、'.join(common_datasets[:2])) or '少数公开数据集'} 展开，"
-            "对低资源样本、分布扰动和数据增强组合的系统设计不足。"
+            f"{str(gap_entry.get('description', '对低资源样本、分布扰动和数据增强组合的系统设计不足。'))}"
         ),
         rare_reason="数据侧创新通常需要额外构造对照与复现实验，因此经常被弱化为辅助手段。",
         risk="若增强策略设计不稳，可能引入分布偏移并削弱结论可信度。",
@@ -447,16 +652,8 @@ def _build_data_gap_candidate(
         evidence_mode=evidence_mode,
         summary=summary,
         analysis_basis=analysis_basis if evidence_mode == "real" else [],
-        supporting_evidence=(
-            _build_supporting_evidence(support_records, ["dataset", "limitations", "evidence_quote"])
-            if evidence_mode == "real"
-            else []
-        ),
-        contrast_evidence=(
-            _build_contrast_evidence(contrast_records, ["dataset", "method", "conclusion"])
-            if evidence_mode == "real"
-            else []
-        ),
+        supporting_evidence=([str(item) for item in gap_entry.get("supporting_evidence", [])] if evidence_mode == "real" else []),
+        contrast_evidence=([str(item) for item in gap_entry.get("contrast_evidence", [])] if evidence_mode == "real" else []),
     )
 
 
@@ -466,27 +663,21 @@ def _build_scenario_gap_candidate(
     summary: dict[str, object],
     evidence_mode: str,
 ) -> InnovationCandidate | None:
-    scenario_signals = ["低资源", "跨域", "部署", "real-world", "edge", "在线", "resource", "domain"]
-    support_records = _records_with_signals(records, ["problem", "limitations", "conclusion"], scenario_signals, minimum=1)
-    if len(support_records) < 2 and evidence_mode == "real":
-        support_records = _dedupe_preserve_order([*(record.title for record in support_records), *(record.title for record in records[:2])])
-        support_records = [record for record in records if record.title in support_records][:3]
+    gap_entry = _top_gap_entry(summary, "scenario_gaps")
+    support_titles = set(gap_entry.get("supporting_papers", []))
+    contrast_titles = set(gap_entry.get("contrast_papers", []))
+    support_records = [record for record in records if record.title in support_titles] or records[:3]
     if not support_records:
         return None
-    contrast_records = _records_without_signals(records, ["problem", "limitations"], scenario_signals, limit=3) or records[:3]
-    analysis_basis = _build_analysis_basis(
-        [
-            "场景侧证据显示文献更多覆盖标准研究设置，低资源、跨域或部署场景覆盖不足。",
-            "支撑论文多在 problem / limitations 中直接提到场景约束，说明这不是纯主观猜测。",
-        ],
-        support_records,
-    )
+    contrast_records = [record for record in records if record.title in contrast_titles] or records[:3]
+    focus = str(gap_entry.get("focus", "低资源与真实应用场景迁移"))
+    analysis_basis = _build_analysis_basis([str(item) for item in gap_entry.get("basis", [])], support_records)
     return _candidate_payload(
         gap_type="scenario_gap",
-        claim=f"面向 {topic} 的低资源与真实应用场景迁移方案",
+        claim=f"面向 {topic} 的 {focus} 方案",
         novelty_reason=(
             f"当前工作更多围绕 {('、'.join(list(summary.get('common_problems', []))[:2])) or '标准研究设置'} 展开，"
-            "对低资源、跨域和部署约束场景覆盖不足。"
+            f"{str(gap_entry.get('description', '对低资源、跨域和部署约束场景覆盖不足。'))}"
         ),
         rare_reason="真实场景通常需要额外工程约束与更长验证周期，因此在毕业论文中常被简化。",
         risk="场景迁移可能带来性能波动，需要明确资源边界和应用假设。",
@@ -496,16 +687,8 @@ def _build_scenario_gap_candidate(
         evidence_mode=evidence_mode,
         summary=summary,
         analysis_basis=analysis_basis if evidence_mode == "real" else [],
-        supporting_evidence=(
-            _build_supporting_evidence(support_records, ["limitations", "problem", "conclusion"])
-            if evidence_mode == "real"
-            else []
-        ),
-        contrast_evidence=(
-            _build_contrast_evidence(contrast_records, ["problem", "method", "conclusion"])
-            if evidence_mode == "real"
-            else []
-        ),
+        supporting_evidence=([str(item) for item in gap_entry.get("supporting_evidence", [])] if evidence_mode == "real" else []),
+        contrast_evidence=([str(item) for item in gap_entry.get("contrast_evidence", [])] if evidence_mode == "real" else []),
     )
 
 
@@ -515,26 +698,21 @@ def _build_evaluation_gap_candidate(
     summary: dict[str, object],
     evidence_mode: str,
 ) -> InnovationCandidate | None:
-    metric_signals = ["鲁棒", "robust", "可解释", "解释", "ablation", "消融", "效率", "error analysis", "案例"]
-    support_records = _records_with_signals(records, ["metrics", "limitations", "conclusion"], metric_signals, minimum=2)
-    if not support_records and evidence_mode == "real":
-        support_records = records[:2]
+    gap_entry = _top_gap_entry(summary, "evaluation_gaps")
+    support_titles = set(gap_entry.get("supporting_papers", []))
+    contrast_titles = set(gap_entry.get("contrast_papers", []))
+    support_records = [record for record in records if record.title in support_titles] or records[:2]
     if not support_records:
         return None
-    contrast_records = _records_without_signals(records, ["metrics", "limitations"], metric_signals, limit=3) or records[:3]
-    analysis_basis = _build_analysis_basis(
-        [
-            f"评价侧证据显示主流评测集中在 {('、'.join(list(summary.get('common_metrics', []))[:2])) or '常规指标'}，扩展评测不足。",
-            "支撑论文在 metrics / limitations 中反复暴露鲁棒性、可解释性或案例分析缺口。",
-        ],
-        support_records,
-    )
+    contrast_records = [record for record in records if record.title in contrast_titles] or records[:3]
+    focus = str(gap_entry.get("focus", "鲁棒性、可解释性与误差分析补强"))
+    analysis_basis = _build_analysis_basis([str(item) for item in gap_entry.get("basis", [])], support_records)
     return _candidate_payload(
         gap_type="evaluation_gap",
-        claim=f"面向 {topic} 的鲁棒性、可解释性与误差分析补强方案",
+        claim=f"面向 {topic} 的 {focus} 方案",
         novelty_reason=(
             f"当前评测大多集中在 {('、'.join(list(summary.get('common_metrics', []))[:2])) or '常规指标'}，"
-            "对鲁棒性、可解释性和错误案例分析的覆盖偏弱。"
+            f"{str(gap_entry.get('description', '对鲁棒性、可解释性和错误案例分析的覆盖偏弱。'))}"
         ),
         rare_reason=(
             f"在 {('、'.join(list(summary.get('common_limitations', []))[:2])) or '现有工作局限'} 背景下，"
@@ -547,16 +725,8 @@ def _build_evaluation_gap_candidate(
         evidence_mode=evidence_mode,
         summary=summary,
         analysis_basis=analysis_basis if evidence_mode == "real" else [],
-        supporting_evidence=(
-            _build_supporting_evidence(support_records, ["limitations", "metrics", "evidence_quote"])
-            if evidence_mode == "real"
-            else []
-        ),
-        contrast_evidence=(
-            _build_contrast_evidence(contrast_records, ["metrics", "conclusion", "method"])
-            if evidence_mode == "real"
-            else []
-        ),
+        supporting_evidence=([str(item) for item in gap_entry.get("supporting_evidence", [])] if evidence_mode == "real" else []),
+        contrast_evidence=([str(item) for item in gap_entry.get("contrast_evidence", [])] if evidence_mode == "real" else []),
     )
 
 
@@ -1574,13 +1744,29 @@ class NoveltyJudgeAgent(BaseAgent):
     task_type = "reviewer"
 
     def run(self, state: ProjectState) -> ProjectState:
+        gap_summary = state.result_schema.get("gap_analysis", {}) if isinstance(state.result_schema, dict) else {}
         ranked: list[InnovationCandidate] = []
         for item in state.innovation_candidates:
             item.overall_score = _compute_overall_score(item)
+            if isinstance(gap_summary, dict):
+                gap_entry = _top_gap_entry(
+                    gap_summary,
+                    {
+                        "method_gap": "method_gaps",
+                        "data_gap": "data_gaps",
+                        "scenario_gap": "scenario_gaps",
+                        "evaluation_gap": "evaluation_gaps",
+                    }.get(item.gap_type, ""),
+                )
+            else:
+                gap_entry = {}
+            evidence_basis = "；".join(str(part) for part in gap_entry.get("basis", [])[:2]) or "证据摘要待补充"
+            mode_hint = "真实差异证据完整" if item.evidence_mode == "real" else "当前仍为 fallback 占位候选"
             item.recommendation_reason = (
                 f"{_format_gap_label(item.gap_type)}方向综合得分 {item.overall_score:.2f}，"
                 f"新颖性 {item.novelty_score:.1f}、可行性 {item.feasibility_score:.1f}、"
                 f"本科适配度 {item.undergrad_fit:.1f}、证据强度 {item.evidence_strength:.1f}；"
+                f"依据为：{evidence_basis}；{mode_hint}，"
                 f"{('建议优先进入实验设计。' if item.evidence_mode == 'real' and item.risk_score <= 6.5 else '建议先补证据或控制风险后再进入实验设计。')}"
             )
             ranked.append(item)

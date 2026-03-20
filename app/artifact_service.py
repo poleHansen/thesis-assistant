@@ -161,6 +161,9 @@ class ArtifactService:
         common_datasets = "、".join(summary.get("common_datasets", [])[:3]) if isinstance(summary, dict) else ""
         common_metrics = "、".join(summary.get("common_metrics", [])[:3]) if isinstance(summary, dict) else ""
         common_limitations = "、".join(summary.get("common_limitations", [])[:3]) if isinstance(summary, dict) else ""
+        rare_methods = "、".join(summary.get("rare_methods", [])[:3]) if isinstance(summary, dict) else ""
+        rare_datasets = "、".join(summary.get("rare_datasets", [])[:3]) if isinstance(summary, dict) else ""
+        rare_metrics = "、".join(summary.get("rare_metrics", [])[:3]) if isinstance(summary, dict) else ""
         gap_overview = str(state.result_schema.get("gap_analysis_overview", "")).strip()
         selected_reason = recommendation.get("selected_reason", selected.recommendation_reason if selected else "")
         lines = [
@@ -175,6 +178,9 @@ class ArtifactService:
             f"- 主流数据共性：{common_datasets or '待补充'}",
             f"- 主流评测共性：{common_metrics or '待补充'}",
             f"- 常见局限：{common_limitations or '待补充'}",
+            f"- 罕见方法线索：{rare_methods or '待补充'}",
+            f"- 罕见数据线索：{rare_datasets or '待补充'}",
+            f"- 罕见评测线索：{rare_metrics or '待补充'}",
             f"- 最明显 gap：{gap_overview or '待补充'}",
             (
                 "- 审核提示：当前结果含 fallback 占位推荐，建议补充文献后再确认最终创新点。"
@@ -183,6 +189,17 @@ class ArtifactService:
             ),
             "",
         ]
+        if isinstance(summary, dict):
+            lines.extend([
+                "## 差异分析摘要",
+                f"- 方法 gap：{self._format_gap_summary_entries(summary.get('method_gaps', []))}",
+                f"- 数据 gap：{self._format_gap_summary_entries(summary.get('data_gaps', []))}",
+                f"- 场景 gap：{self._format_gap_summary_entries(summary.get('scenario_gaps', []))}",
+                f"- 评价 gap：{self._format_gap_summary_entries(summary.get('evaluation_gaps', []))}",
+                f"- 支撑证据映射：{self._format_evidence_map(summary.get('support_evidence_map', {}))}",
+                f"- 对照证据映射：{self._format_evidence_map(summary.get('contrast_evidence_map', {}))}",
+                "",
+            ])
         for idx, item in enumerate(state.innovation_candidates, start=1):
             analysis_basis = "；".join(item.analysis_basis) or "无"
             supporting_evidence = "；".join(item.supporting_evidence) or "无"
@@ -200,6 +217,7 @@ class ArtifactService:
                     f"- 创新性说明：{item.novelty_reason}",
                     f"- 少见原因：{item.rare_reason}",
                     f"- 推荐理由：{item.recommendation_reason or '待排序阶段生成'}",
+                    f"- 当前名次说明：第 {idx} 名，依据综合评分、证据强度与本科适配度排序。",
                     f"- 证据链解释：优先展示结构化文献中的 limitations / metrics / dataset / problem 摘要，以说明为何判断为该 gap。",
                     (
                         f"- 多维评分：overall={item.overall_score:.2f} / novelty={item.novelty_score:.1f} / "
@@ -219,6 +237,37 @@ class ArtifactService:
                 ]
             )
         return "\n".join(lines)
+
+    def _format_gap_summary_entries(self, entries: object) -> str:
+        if not isinstance(entries, list):
+            return "待补充"
+        fragments: list[str] = []
+        for entry in entries[:2]:
+            if not isinstance(entry, dict):
+                continue
+            focus = str(entry.get("focus", "待补充")).strip() or "待补充"
+            description = str(entry.get("description", "")).strip()
+            basis = "；".join(str(item) for item in entry.get("basis", [])[:2]) if isinstance(entry.get("basis"), list) else ""
+            fragment = f"{focus}：{description}" if description else focus
+            if basis:
+                fragment = f"{fragment}（依据：{basis}）"
+            fragments.append(fragment)
+        return "；".join(fragments) or "待补充"
+
+    def _format_evidence_map(self, mapping: object) -> str:
+        if not isinstance(mapping, dict):
+            return "待补充"
+        chunks: list[str] = []
+        for label, entries in mapping.items():
+            if not isinstance(entries, list) or not entries:
+                continue
+            first = entries[0]
+            if not isinstance(first, dict):
+                continue
+            phrase = str(first.get("phrase", "待补充")).strip() or "待补充"
+            papers = "、".join(first.get("supporting_papers", [])[:2]) if isinstance(first.get("supporting_papers"), list) else ""
+            chunks.append(f"{label}={phrase}{f'（{papers}）' if papers else ''}")
+        return "；".join(chunks) or "待补充"
 
     def _experiment_plan_text(self, state: ProjectState) -> str:
         plan = state.experiment_plan

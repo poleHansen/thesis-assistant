@@ -156,6 +156,43 @@ class ArtifactServiceTest(unittest.TestCase):
             "common_datasets": ["THUCNews"],
             "common_metrics": ["Accuracy", "F1"],
             "common_limitations": ["鲁棒性评测不足"],
+            "rare_methods": ["对比学习模块"],
+            "rare_datasets": ["Fudan"],
+            "rare_metrics": ["Robustness"],
+            "method_gaps": [
+                {
+                    "focus": "Transformer 编码器与轻量模块组合改造",
+                    "description": "主流方法集中，但轻量协同改造较少。",
+                    "basis": ["主流方法集中在 Transformer 编码器。"],
+                }
+            ],
+            "data_gaps": [
+                {
+                    "focus": "THUCNews 外数据补强",
+                    "description": "数据覆盖较窄。",
+                    "basis": ["大多数论文集中在 THUCNews。"],
+                }
+            ],
+            "scenario_gaps": [
+                {
+                    "focus": "低资源与跨域验证",
+                    "description": "真实应用场景覆盖不足。",
+                    "basis": ["多篇论文提到低资源验证不足。"],
+                }
+            ],
+            "evaluation_gaps": [
+                {
+                    "focus": "鲁棒性与误差分析",
+                    "description": "评价维度仍不完整。",
+                    "basis": ["4 篇论文只报告 Accuracy/F1。"],
+                }
+            ],
+            "support_evidence_map": {
+                "methods": [{"phrase": "Transformer 编码器", "supporting_papers": ["Paper 1", "Paper 2"]}],
+            },
+            "contrast_evidence_map": {
+                "metrics": [{"phrase": "Robustness", "supporting_papers": ["Paper 3"]}],
+            },
         }
         state.result_schema["gap_analysis_overview"] = "最明显的 gap 类型是评价空白，因为主流论文主要集中在常规指标。"
         state.result_schema["innovation_recommendation"] = {
@@ -199,11 +236,15 @@ class ArtifactServiceTest(unittest.TestCase):
         self.assertIn("推荐理由", report)
         self.assertIn("证据模式", report)
         self.assertIn("最明显 gap", report)
+        self.assertIn("差异分析摘要", report)
+        self.assertIn("支撑证据映射", report)
+        self.assertIn("对照证据映射", report)
         self.assertIn("证据链解释", report)
         self.assertIn("复核建议", report)
         self.assertIn("分析依据", report)
         self.assertIn("支撑证据", report)
         self.assertIn("对照依据", report)
+        self.assertIn("当前名次说明", report)
 
     def _build_state(self, word_template_path: str, ppt_template_path: str) -> ProjectState:
         state = ProjectState(

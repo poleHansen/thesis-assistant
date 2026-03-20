@@ -392,6 +392,11 @@ textarea {
   gap: 14px;
 }
 
+.project-layout__left,
+.project-layout__right {
+  min-height: 0;
+}
+
 .field {
   display: grid;
   gap: 8px;
@@ -507,15 +512,64 @@ textarea {
   border-color: rgba(31, 94, 255, 0.28);
 }
 
+.innovation-summary-card {
+  display: grid;
+  gap: 16px;
+  padding: 18px;
+  border-radius: 22px;
+  border: 1px solid rgba(17, 17, 17, 0.06);
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.innovation-summary-card__grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.innovation-summary-card__grid--compact {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.innovation-summary-card__grid div {
+  display: grid;
+  gap: 6px;
+}
+
+.innovation-summary-card__grid strong,
+.innovation-summary-card__grid span {
+  color: var(--text-primary);
+}
+
 .innovation-card__head {
   display: flex;
   justify-content: space-between;
   margin-bottom: 12px;
+  gap: 16px;
+}
+
+.innovation-card__head div {
+  display: grid;
+  gap: 4px;
 }
 
 .innovation-card__head span {
   color: var(--accent);
   font-weight: 700;
+}
+
+.innovation-score-row,
+.innovation-map-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.innovation-score-row {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.innovation-map-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .summary-grid {
@@ -537,6 +591,27 @@ textarea {
 
 .panel__header--actions {
   flex-wrap: wrap;
+}
+
+.panel--scrollable {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.panel__content-scroll {
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 6px;
+}
+
+.panel--scrollable-innovation .panel__content-scroll {
+  max-height: min(48vh, 780px);
+}
+
+.panel--scrollable-literature .panel__content-scroll {
+  max-height: min(52vh, 860px);
 }
 
 .settings-layout,
@@ -619,6 +694,15 @@ textarea {
   flex-wrap: wrap;
 }
 
+@media (max-width: 900px) {
+  .innovation-summary-card__grid,
+  .innovation-summary-card__grid--compact,
+  .innovation-score-row,
+  .innovation-map-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .field--wide {
   grid-column: 1 / -1;
 }
@@ -698,6 +782,11 @@ textarea {
     min-height: auto;
     padding: 34px 0 56px;
     gap: 28px;
+  }
+
+  .panel--scrollable-innovation .panel__content-scroll,
+  .panel--scrollable-literature .panel__content-scroll {
+    max-height: 40vh;
   }
 
   .hero-demo__grid,

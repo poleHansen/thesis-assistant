@@ -152,24 +152,10 @@ export function ProjectDetailPage() {
               <InnovationList
                 innovations={project.innovation_candidates}
                 selectedClaim={project.selected_innovation?.claim}
+                gapAnalysis={project.result_schema.gap_analysis}
+                gapOverview={typeof project.result_schema.gap_analysis_overview === "string" ? project.result_schema.gap_analysis_overview : undefined}
+                recommendation={project.result_schema.innovation_recommendation}
               />
-              <section className="panel glass-card">
-                <div className="panel__header">
-                  <div>
-                    <p className="eyebrow">Innovation Evidence</p>
-                    <h3>创新点证据说明</h3>
-                  </div>
-                </div>
-                <p className="muted">
-                  当前候选创新点会标注 real / fallback。real 表示基于结构化文献差异分析生成，fallback 表示证据不足时的占位推荐，建议人工复核。
-                </p>
-                <p className="muted">
-                  若推荐项显示为 fallback，优先补充文献后再进入实验设计；若显示为 real，可直接进入实验设计并继续完善对照实验。
-                </p>
-                <p className="muted">
-                  卡片中的“分析依据 / 支撑证据 / 对照依据”来自结构化文献字段摘要；若为 fallback，这些区域可能为空。
-                </p>
-              </section>
               <ExperimentSummary plan={project.experiment_plan} />
               <section className="panel glass-card">
                 <div className="panel__header">
@@ -225,14 +211,14 @@ export function ProjectDetailPage() {
                   ))}
                 </div>
               </section>
-              <section className="panel glass-card">
+              <section className="panel glass-card panel--scrollable panel--scrollable-literature">
                 <div className="panel__header">
                   <div>
                     <p className="eyebrow">Literature</p>
                     <h3>文献摘要</h3>
                   </div>
                 </div>
-                <div className="stack-list">
+                <div className="stack-list panel__content-scroll">
                   {project.literature_records.length === 0 ? (
                     <p className="muted">运行后会展示已采集的文献记录。</p>
                   ) : null}
