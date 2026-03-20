@@ -124,8 +124,14 @@ class ArtifactServiceTest(unittest.TestCase):
                 "doi_or_url": "https://example.com/paper",
                 "evidence_source": "abstract",
                 "confidence": "0.78",
+                "evidence_quote": "This paper proposes a structured method.",
+                "pdf_path": "",
+                "pdf_parse_status": "not_applicable",
+                "pdf_parse_message": "",
                 "citation_count": "12",
                 "is_fallback": "no",
+                "needs_review": "no",
+                "review_note": "",
             }
         ]
 
@@ -139,6 +145,8 @@ class ArtifactServiceTest(unittest.TestCase):
             self.assertIn("evidence_source", text)
             self.assertIn("confidence", text)
             self.assertIn("is_fallback", text)
+            self.assertIn("evidence_quote", text)
+            self.assertIn("needs_review", text)
 
     def _build_state(self, word_template_path: str, ppt_template_path: str) -> ProjectState:
         state = ProjectState(

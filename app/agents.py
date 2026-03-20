@@ -7,9 +7,19 @@ from pathlib import Path
 from urllib import error, parse, request
 from xml.etree import ElementTree
 
-from app.domain import ExperimentPlan, InnovationCandidate, LiteratureRecord, ProjectState
+from app.domain import (
+    ExperimentPlan,
+    InnovationCandidate,
+    LiteratureRecord,
+    ProjectState,
+    RetrievalSummary,
+)
 from app.model_gateway import ModelGateway
 from app.utils import slugify
+
+
+VALID_EVIDENCE_SOURCES = {"abstract", "pdf", "manual", "fallback"}
+MIN_VALID_PAPER_COUNT = 5
 
 
 def _contains_cjk(text: str) -> bool:
@@ -95,9 +105,25 @@ def _heuristic_survey_row(record: LiteratureRecord) -> dict[str, str]:
         "doi_or_url": record.doi_or_url,
         "evidence_source": record.evidence_source,
         "confidence": f"{record.confidence_score:.2f}",
+        "evidence_quote": record.evidence_quote,
+        "pdf_path": record.pdf_path or "",
+        "pdf_parse_status": record.pdf_parse_status,
+        "pdf_parse_message": record.pdf_parse_message,
         "citation_count": str(record.citation_count),
         "is_fallback": "yes" if record.is_fallback else "no",
+        "needs_review": "yes" if record.needs_review else "no",
+        "review_note": record.review_note,
     }
+
+
+def is_valid_literature_record(record: LiteratureRecord) -> bool:
+    if record.is_fallback:
+        return False
+    if not _clean_text(record.title):
+        return False
+    has_abstract = bool(_clean_text(record.abstract)) and "摘要缺失" not in record.abstract
+    has_link = bool(_clean_text(record.doi_or_url))
+    return has_abstract or has_link
 
 
 def _clean_text(value: str) -> str:
@@ -159,11 +185,16 @@ def _build_structured_record(record: LiteratureRecord, source_text: str) -> Lite
         "仍需结合全文或人工核验局限性",
     )
     quotes = [item for item in [problem_quote, method_quote, dataset_quote, metrics_quote, conclusion_quote, limitations_quote] if item]
-    evidence_source = "pdf" if record.pdf_path and source_text != (record.abstract or "") else "abstract"
+    evidence_source = record.evidence_source
+    if evidence_source not in VALID_EVIDENCE_SOURCES:
+        evidence_source = "pdf" if record.pdf_path and source_text != (record.abstract or "") else "abstract"
+    if record.is_fallback:
+        evidence_source = "fallback"
     evidence_spans = list(dict.fromkeys(quotes[:4]))
     confidence = 0.85 if evidence_source == "pdf" else 0.7
     if record.is_fallback:
         confidence = 0.25
+    needs_review, review_note = _build_review_flags(record, confidence)
     return LiteratureRecord(
         source=record.source,
         title=record.title,
@@ -186,6 +217,10 @@ def _build_structured_record(record: LiteratureRecord, source_text: str) -> Lite
         evidence_source=evidence_source,
         confidence_score=confidence,
         evidence_quote=quotes[0] if quotes else (record.abstract[:180] if record.abstract else ""),
+        pdf_parse_status=record.pdf_parse_status,
+        pdf_parse_message=record.pdf_parse_message,
+        needs_review=needs_review,
+        review_note=review_note,
     )
 
 
@@ -220,11 +255,19 @@ def _merge_reader_result(base: LiteratureRecord, llm_fields: dict[str, str]) -> 
         confidence = float(llm_fields.get("confidence_score", base.confidence_score))
     except (TypeError, ValueError):
         confidence = base.confidence_score
+    confidence = max(0.0, min(1.0, confidence))
+
+    evidence_source = pick("evidence_source", base.evidence_source)
+    if evidence_source not in VALID_EVIDENCE_SOURCES:
+        evidence_source = base.evidence_source
+    if base.is_fallback:
+        evidence_source = "fallback"
 
     evidence_quote = pick("evidence_quote", base.evidence_quote)
     evidence_spans = list(
         dict.fromkeys([*base.evidence_spans, evidence_quote] if evidence_quote else base.evidence_spans)
     )
+    needs_review, review_note = _build_review_flags(base, confidence, evidence_quote=evidence_quote)
 
     return LiteratureRecord(
         source=base.source,
@@ -245,10 +288,64 @@ def _merge_reader_result(base: LiteratureRecord, llm_fields: dict[str, str]) -> 
         metrics=pick("metrics", base.metrics),
         conclusion=pick("conclusion", base.conclusion),
         limitations=pick("limitations", base.limitations),
-        evidence_source=pick("evidence_source", base.evidence_source),
+        evidence_source=evidence_source,
         confidence_score=max(base.confidence_score, confidence),
         evidence_quote=evidence_quote,
+        pdf_parse_status=base.pdf_parse_status,
+        pdf_parse_message=base.pdf_parse_message,
+        needs_review=needs_review,
+        review_note=review_note,
     )
+
+
+def _build_review_flags(
+    record: LiteratureRecord,
+    confidence: float,
+    *,
+    evidence_quote: str | None = None,
+) -> tuple[bool, str]:
+    reasons: list[str] = []
+    effective_quote = _clean_text(evidence_quote if evidence_quote is not None else record.evidence_quote)
+    if record.is_fallback:
+        reasons.append("仅依赖 fallback 占位文献")
+    if confidence < 0.55:
+        reasons.append("置信度偏低")
+    if record.pdf_path and record.pdf_parse_status in {"degraded", "failed"}:
+        reasons.append(record.pdf_parse_message or "PDF 解析失败或内容不足")
+    if not _clean_text(record.abstract) or "摘要缺失" in (record.abstract or ""):
+        reasons.append("摘要缺失")
+    if not effective_quote:
+        reasons.append("缺少关键证据摘录")
+    review_note = "；".join(dict.fromkeys(reasons))
+    return bool(review_note), review_note
+
+
+def _build_survey_row(record: LiteratureRecord) -> dict[str, str]:
+    row = _heuristic_survey_row(record)
+    row.update(
+        {
+            "title": record.title,
+            "problem": record.problem or row["problem"],
+            "method": record.method or row["method"],
+            "dataset": record.dataset or row["dataset"],
+            "metrics": record.metrics or row["metrics"],
+            "conclusion": record.conclusion or row["conclusion"],
+            "limitations": record.limitations or row["limitations"],
+            "source": record.source,
+            "doi_or_url": record.doi_or_url,
+            "evidence_source": record.evidence_source,
+            "confidence": f"{record.confidence_score:.2f}",
+            "evidence_quote": record.evidence_quote,
+            "pdf_path": record.pdf_path or "",
+            "pdf_parse_status": record.pdf_parse_status,
+            "pdf_parse_message": record.pdf_parse_message,
+            "citation_count": str(record.citation_count),
+            "is_fallback": "yes" if record.is_fallback else "no",
+            "needs_review": "yes" if record.needs_review else "no",
+            "review_note": record.review_note,
+        }
+    )
+    return row
 
 
 class BaseAgent:
@@ -351,7 +448,8 @@ class RetrieverAgent(BaseAgent):
         )
         collected: list[LiteratureRecord] = []
         diagnostics: list[dict[str, str | int | bool]] = []
-        for query in keywords[:3]:
+        deduped: list[LiteratureRecord] = []
+        for query in keywords:
             query_language = "english" if _looks_english_query(query) else "original"
             openalex_records, openalex_diag = self._search_openalex(query, state.request.topic, query_language)
             arxiv_records, arxiv_diag = self._search_arxiv(query, state.request.topic, query_language)
@@ -360,7 +458,8 @@ class RetrieverAgent(BaseAgent):
             collected.extend(openalex_records)
             collected.extend(arxiv_records)
             collected.extend(semantic_records)
-            if len(collected) >= 6:
+            deduped = self._dedupe_and_rank(collected)
+            if self._count_valid_records(deduped) >= MIN_VALID_PAPER_COUNT:
                 break
 
         if state.uploaded_pdf_paths:
@@ -397,12 +496,50 @@ class RetrieverAgent(BaseAgent):
             elif diagnostics:
                 state.warnings.append("在线检索请求已发出，但未命中可用文献结果。")
 
+        valid_count = self._count_valid_records(deduped)
+        fallback_count = sum(1 for item in deduped if item.is_fallback)
+        failed_sources = list(
+            dict.fromkeys(
+                str(item.get("source"))
+                for item in diagnostics
+                if item.get("source") != "user_pdf" and not item.get("ok")
+            )
+        )
+
+        if valid_count >= MIN_VALID_PAPER_COUNT:
+            retrieval_status = "success"
+        elif valid_count > 0:
+            retrieval_status = "partial"
+            state.warnings.append(f"当前仅获得 {valid_count} 篇有效文献，未达到 {MIN_VALID_PAPER_COUNT} 篇验收门槛。")
+        else:
+            retrieval_status = "fallback"
+
+        state.retrieval_summary = RetrievalSummary(
+            retrieval_status=retrieval_status,
+            valid_paper_count=valid_count,
+            fallback_count=fallback_count,
+            failed_sources=failed_sources,
+            needs_review_count=sum(1 for item in deduped if item.needs_review),
+        )
+
         for index, item in enumerate(deduped, start=1):
             item.retrieval_rank = index
 
         state.literature_records = deduped
         self.log(state, f"collected {len(deduped)} literature records")
         return state
+
+    def _count_valid_records(self, records: list[LiteratureRecord]) -> int:
+        unique_titles: set[str] = set()
+        count = 0
+        for item in records:
+            normalized_title = _clean_text(item.title).lower()
+            if not normalized_title or normalized_title in unique_titles:
+                continue
+            unique_titles.add(normalized_title)
+            if is_valid_literature_record(item):
+                count += 1
+        return count
 
     def _search_openalex(
         self, query: str, original_query: str, query_language: str
@@ -531,6 +668,21 @@ class RetrieverAgent(BaseAgent):
 
             reader = PdfReader(str(pdf_path))
             text = "".join(page.extract_text() or "" for page in reader.pages[:3])
+        except Exception as exc:
+            return LiteratureRecord(
+                source="user_pdf",
+                title=pdf_path.stem,
+                authors="用户上传",
+                year=2024,
+                abstract="PDF 已上传，但当前环境无法可靠提取文本，需要人工补充校验。",
+                doi_or_url=str(pdf_path),
+                pdf_path=str(pdf_path),
+                evidence_source="manual",
+                pdf_parse_status="failed",
+                pdf_parse_message=str(exc) or "PDF 解析失败",
+                needs_review=True,
+                review_note="PDF 解析失败",
+            )
         except Exception:
             text = ""
         if not text:
@@ -542,12 +694,19 @@ class RetrieverAgent(BaseAgent):
                 abstract="PDF 已上传，但当前环境无法可靠提取文本，需要人工补充校验。",
                 doi_or_url=str(pdf_path),
                 pdf_path=str(pdf_path),
+                evidence_source="manual",
+                pdf_parse_status="failed",
+                pdf_parse_message="PDF 无法提取文本",
+                needs_review=True,
+                review_note="PDF 无法提取文本",
             )
         title = next(
             (line.strip() for line in text.splitlines() if line.strip()),
             pdf_path.stem,
         )
         abstract = text[:1000]
+        parse_status = "success" if len(_clean_text(text)) >= 600 else "degraded"
+        parse_message = "" if parse_status == "success" else "PDF 可提取文本较少，仅能作为降级证据"
         return LiteratureRecord(
             source="user_pdf",
             title=title,
@@ -559,6 +718,10 @@ class RetrieverAgent(BaseAgent):
             evidence_source="pdf",
             confidence_score=0.8,
             evidence_quote=abstract[:180],
+            pdf_parse_status=parse_status,
+            pdf_parse_message=parse_message,
+            needs_review=parse_status != "success",
+            review_note=parse_message,
         )
 
     def _dedupe_and_rank(self, records: list[LiteratureRecord]) -> list[LiteratureRecord]:
@@ -651,11 +814,39 @@ class ReaderAgent(BaseAgent):
     def run(self, state: ProjectState) -> ProjectState:
         enriched: list[LiteratureRecord] = []
         for record in state.literature_records:
-            source_text = self._resolve_source_text(record)
-            structured = _build_structured_record(record, source_text)
-            structured = self._refine_with_llm(record, structured, source_text)
+            source_text, pdf_parse_status, pdf_parse_message = self._resolve_source_text(record)
+            seeded = LiteratureRecord(
+                source=record.source,
+                title=record.title,
+                authors=record.authors,
+                year=record.year,
+                abstract=record.abstract,
+                doi_or_url=record.doi_or_url,
+                pdf_path=record.pdf_path,
+                evidence_spans=record.evidence_spans,
+                keywords=record.keywords,
+                citation_count=record.citation_count,
+                retrieval_rank=record.retrieval_rank,
+                is_fallback=record.is_fallback,
+                problem=record.problem,
+                method=record.method,
+                dataset=record.dataset,
+                metrics=record.metrics,
+                conclusion=record.conclusion,
+                limitations=record.limitations,
+                evidence_source=record.evidence_source,
+                confidence_score=record.confidence_score,
+                evidence_quote=record.evidence_quote,
+                pdf_parse_status=pdf_parse_status,
+                pdf_parse_message=pdf_parse_message,
+                needs_review=record.needs_review,
+                review_note=record.review_note,
+            )
+            structured = _build_structured_record(seeded, source_text)
+            structured = self._refine_with_llm(seeded, structured, source_text)
             enriched.append(structured)
         state.literature_records = enriched
+        state.retrieval_summary.needs_review_count = sum(1 for item in enriched if item.needs_review)
         state.literature_detail_fields = [
             "problem",
             "method",
@@ -667,6 +858,10 @@ class ReaderAgent(BaseAgent):
             "doi_or_url",
             "evidence_source",
             "confidence_score",
+            "pdf_parse_status",
+            "pdf_parse_message",
+            "needs_review",
+            "review_note",
         ]
         self.log(state, f"structured {len(enriched)} literature records")
         return state
@@ -697,7 +892,7 @@ class ReaderAgent(BaseAgent):
         parsed = _try_parse_json_object(result.content)
         return _merge_reader_result(structured, parsed)
 
-    def _resolve_source_text(self, record: LiteratureRecord) -> str:
+    def _resolve_source_text(self, record: LiteratureRecord) -> tuple[str, str, str]:
         if record.pdf_path:
             path = Path(record.pdf_path)
             if path.exists():
@@ -708,10 +903,13 @@ class ReaderAgent(BaseAgent):
                     text = " ".join((page.extract_text() or "") for page in reader.pages[:5])
                     text = _clean_text(text)
                     if text:
-                        return text
-                except Exception:
-                    pass
-        return record.abstract or record.title
+                        status = "success" if len(text) >= 800 else "degraded"
+                        message = "" if status == "success" else "PDF 可提取文本较少，已降级使用。"
+                        return text, status, message
+                except Exception as exc:
+                    return record.abstract or record.title, "failed", str(exc) or "PDF 解析失败"
+            return record.abstract or record.title, "failed", "PDF 文件不存在或不可访问"
+        return record.abstract or record.title, "not_applicable", ""
 
 
 class EvidenceExtractorAgent(BaseAgent):
@@ -719,7 +917,7 @@ class EvidenceExtractorAgent(BaseAgent):
     task_type = "survey_synthesizer"
 
     def run(self, state: ProjectState) -> ProjectState:
-        state.survey_table = [_heuristic_survey_row(record) for record in state.literature_records]
+        state.survey_table = [_build_survey_row(record) for record in state.literature_records]
         self.log(state, f"built survey table with {len(state.survey_table)} rows")
         return state
 

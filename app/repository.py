@@ -13,6 +13,7 @@ from app.domain import (
     LiteratureRecord,
     ProjectCreate,
     ProjectState,
+    RetrievalSummary,
     TemplateManifest,
     TemplateSource,
 )
@@ -180,5 +181,6 @@ class ProjectRepository:
             if state_data.get("experiment_plan")
             else None
         )
+        kwargs["retrieval_summary"] = RetrievalSummary(**state_data.get("retrieval_summary", {}))
         kwargs["artifacts"] = ArtifactBundle(**state_data.get("artifacts", {}))
         return ProjectState(**kwargs)

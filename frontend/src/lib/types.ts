@@ -62,14 +62,28 @@ export interface LiteratureRecord {
   evidence_source: string;
   confidence_score: number;
   evidence_quote: string;
+  pdf_parse_status: string;
+  pdf_parse_message: string;
+  needs_review: boolean;
+  review_note: string;
 }
 
 export interface RetrievalDiagnostic {
   source: string;
   query: string;
+  original_query?: string;
+  query_language?: string;
   ok: boolean;
   count: number;
   error: string;
+}
+
+export interface RetrievalSummary {
+  retrieval_status: "success" | "partial" | "fallback";
+  valid_paper_count: number;
+  fallback_count: number;
+  failed_sources: string[];
+  needs_review_count: number;
 }
 
 export interface InnovationCandidate {
@@ -113,6 +127,7 @@ export interface ProjectState {
   uploaded_pdf_paths: string[];
   literature_records: LiteratureRecord[];
   retrieval_diagnostics: RetrievalDiagnostic[];
+  retrieval_summary: RetrievalSummary;
   survey_table: Array<Record<string, unknown>>;
   literature_detail_fields: string[];
   innovation_candidates: InnovationCandidate[];

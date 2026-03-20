@@ -43,6 +43,18 @@ export function ProjectDetailPage() {
     if (!project?.template_source) return "未选择模板";
     return templateSourceText[project.template_source.source_type];
   }, [project?.template_source]);
+  const retrievalStatusText = useMemo(() => {
+    switch (project?.retrieval_summary?.retrieval_status) {
+      case "success":
+        return "达标";
+      case "partial":
+        return "部分成功";
+      case "fallback":
+        return "离线回退";
+      default:
+        return "待运行";
+    }
+  }, [project?.retrieval_summary?.retrieval_status]);
 
   if (!projectId) {
     return (
@@ -145,6 +157,37 @@ export function ProjectDetailPage() {
               <section className="panel glass-card">
                 <div className="panel__header">
                   <div>
+                    <p className="eyebrow">Research Summary</p>
+                    <h3>研究层状态摘要</h3>
+                  </div>
+                </div>
+                <div className="stack-list">
+                  <article className="paper-card">
+                    <div className="paper-card__meta-row">
+                      <span className="paper-card__badge">检索状态 {retrievalStatusText}</span>
+                      <span className="paper-card__badge">
+                        有效文献 {project.retrieval_summary?.valid_paper_count ?? 0}
+                      </span>
+                      <span className="paper-card__badge">
+                        fallback {project.retrieval_summary?.fallback_count ?? 0}
+                      </span>
+                      <span className="paper-card__badge">
+                        需复核 {project.retrieval_summary?.needs_review_count ?? 0}
+                      </span>
+                    </div>
+                    {project.retrieval_summary?.failed_sources?.length ? (
+                      <p className="muted">
+                        失败源：{project.retrieval_summary.failed_sources.join("、")}
+                      </p>
+                    ) : (
+                      <p className="muted">运行后将自动汇总有效文献数、fallback 数量和需复核数量。</p>
+                    )}
+                  </article>
+                </div>
+              </section>
+              <section className="panel glass-card">
+                <div className="panel__header">
+                  <div>
                     <p className="eyebrow">Retrieval</p>
                     <h3>在线检索状态</h3>
                   </div>
@@ -159,6 +202,7 @@ export function ProjectDetailPage() {
                       <span>
                         查询：{item.query} · 状态：{item.ok ? "成功" : "失败"} · 命中：{item.count}
                       </span>
+                      {item.query_language ? <span>查询语言：{item.query_language}</span> : null}
                       {item.error ? <p className="error-text">失败原因：{item.error}</p> : null}
                     </article>
                   ))}
@@ -188,6 +232,12 @@ export function ProjectDetailPage() {
                         <span className="paper-card__badge">
                           置信度 {item.confidence_score.toFixed(2)}
                         </span>
+                        {item.evidence_source === "pdf" ? (
+                          <span className="paper-card__badge">PDF 证据</span>
+                        ) : null}
+                        {item.evidence_source === "abstract" ? (
+                          <span className="paper-card__badge">摘要证据</span>
+                        ) : null}
                         {item.citation_count ? (
                           <span className="paper-card__badge">引用 {item.citation_count}</span>
                         ) : null}
@@ -195,6 +245,18 @@ export function ProjectDetailPage() {
                           <span className="paper-card__badge paper-card__badge--warning">
                             离线占位
                           </span>
+                        ) : null}
+                        {item.confidence_score < 0.55 ? (
+                          <span className="paper-card__badge paper-card__badge--warning">低置信度</span>
+                        ) : null}
+                        {item.needs_review ? (
+                          <span className="paper-card__badge paper-card__badge--warning">需复核</span>
+                        ) : null}
+                        {item.pdf_parse_status === "failed" ? (
+                          <span className="paper-card__badge paper-card__badge--warning">PDF 失败</span>
+                        ) : null}
+                        {item.pdf_parse_status === "degraded" ? (
+                          <span className="paper-card__badge paper-card__badge--warning">PDF 降级</span>
                         ) : null}
                       </div>
                       <p>{item.abstract}</p>
@@ -227,6 +289,11 @@ export function ProjectDetailPage() {
                       {item.evidence_quote ? (
                         <blockquote className="paper-card__quote">{item.evidence_quote}</blockquote>
                       ) : null}
+                      {item.review_note ? (
+                        <p className="muted">复核建议：{item.review_note}</p>
+                      ) : null}
+                      {item.pdf_path ? <p className="muted">PDF 来源：{item.pdf_path}</p> : null}
+                      {item.pdf_parse_message ? <p className="muted">PDF 状态：{item.pdf_parse_message}</p> : null}
                       {item.doi_or_url ? (
                         <a href={item.doi_or_url} target="_blank" rel="noreferrer">
                           查看来源

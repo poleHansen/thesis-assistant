@@ -79,7 +79,9 @@ class WorkflowTest(unittest.TestCase):
             self.assertTrue(all(record.problem for record in result.literature_records))
             self.assertTrue(all(record.method for record in result.literature_records))
             self.assertTrue(all("confidence" in row for row in result.survey_table))
+            self.assertTrue(all("needs_review" in row for row in result.survey_table))
             self.assertTrue(all(record.retrieval_rank >= 1 for record in result.literature_records))
+            self.assertIn(result.retrieval_summary.retrieval_status, {"success", "partial", "fallback"})
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
@@ -124,6 +126,42 @@ class WorkflowTest(unittest.TestCase):
         self.assertEqual(result.literature_records[0].dataset, "ChnSentiCorp")
         self.assertEqual(result.literature_records[0].evidence_quote, "We propose a hierarchical attention network.")
         self.assertGreaterEqual(result.literature_records[0].confidence_score, 0.93)
+        self.assertFalse(result.literature_records[0].needs_review)
+
+    def test_reader_agent_sanitizes_invalid_evidence_fields(self) -> None:
+        class DummyGateway:
+            def complete(self, task_type: str, prompt: str, *, system_prompt: str = ""):
+                return SimpleNamespace(
+                    provider="dummy",
+                    model="dummy-reader",
+                    content=(
+                        '{"problem":"图像分类","method":"轻量网络","dataset":"CIFAR-10",'
+                        '"metrics":"Accuracy","conclusion":"有效","limitations":"待验证",'
+                        '"evidence_source":"hallucinated","confidence_score":1.8,"evidence_quote":""}'
+                    ),
+                    fallback_used=False,
+                )
+
+        state = ProjectState(
+            project_id="project-reader-validation",
+            request=ProjectCreate(topic="图像分类"),
+            literature_records=[
+                LiteratureRecord(
+                    source="semantic_scholar",
+                    title="Lightweight Image Classification",
+                    authors="Tester",
+                    year=2025,
+                    abstract="This paper studies image classification and proposes a lightweight network on CIFAR-10.",
+                    doi_or_url="https://example.com/image",
+                )
+            ],
+        )
+
+        result = ReaderAgent(DummyGateway()).run(state)
+
+        self.assertEqual(result.literature_records[0].evidence_source, "abstract")
+        self.assertLessEqual(result.literature_records[0].confidence_score, 1.0)
+        self.assertTrue(result.literature_records[0].needs_review)
 
     def test_retriever_records_failure_diagnostics_before_fallback(self) -> None:
         class FailingRetriever(RetrieverAgent):
@@ -152,6 +190,78 @@ class WorkflowTest(unittest.TestCase):
         self.assertTrue(all(item["query_language"] == "english" for item in result.retrieval_diagnostics))
         self.assertTrue(any("openalex" in warning.lower() for warning in result.warnings))
         self.assertTrue(any(record.is_fallback for record in result.literature_records))
+        self.assertEqual(result.retrieval_summary.retrieval_status, "fallback")
+
+    def test_retriever_requires_five_valid_papers_for_success(self) -> None:
+        class PartiallySuccessfulRetriever(RetrieverAgent):
+            def __init__(self) -> None:
+                self.gateway = ModelGateway(ModelSettingsStore.default_settings())
+                self.queries_seen: list[str] = []
+
+            def _search_openalex(self, query: str, original_query: str, query_language: str):
+                self.queries_seen.append(query)
+                if query == "q1":
+                    records = [
+                        LiteratureRecord(
+                            source="openalex",
+                            title=f"Paper {index}",
+                            authors="Tester",
+                            year=2025,
+                            abstract="Abstract available",
+                            doi_or_url=f"https://example.com/{index}",
+                        )
+                        for index in range(1, 3)
+                    ]
+                elif query == "q2":
+                    records = [
+                        LiteratureRecord(
+                            source="openalex",
+                            title=f"Paper {index}",
+                            authors="Tester",
+                            year=2025,
+                            abstract="Abstract available",
+                            doi_or_url=f"https://example.com/{index}",
+                        )
+                        for index in range(3, 5)
+                    ]
+                else:
+                    records = []
+                return records, self._build_diagnostic("openalex", query, True, len(records), "", original_query, query_language)
+
+            def _search_arxiv(self, query: str, original_query: str, query_language: str):
+                return [], self._build_diagnostic("arxiv", query, True, 0, "", original_query, query_language)
+
+            def _search_semantic_scholar(self, query: str, original_query: str, query_language: str):
+                if query == "q3":
+                    records = [
+                        LiteratureRecord(
+                            source="semantic_scholar",
+                            title="Paper 5",
+                            authors="Tester",
+                            year=2025,
+                            abstract="Abstract available",
+                            doi_or_url="https://example.com/5",
+                        )
+                    ]
+                else:
+                    records = []
+                return records, self._build_diagnostic("semantic_scholar", query, True, len(records), "", original_query, query_language)
+
+        state = ProjectState(
+            project_id="project-retrieval-success-threshold",
+            request=ProjectCreate(topic="中文文本分类算法"),
+            result_schema={
+                "translated_topic": "Chinese text classification algorithms",
+                "query_keywords": ["q1", "q2", "q3", "q4"],
+            },
+        )
+
+        result = PartiallySuccessfulRetriever().run(state)
+
+        self.assertEqual(result.retrieval_summary.valid_paper_count, 5)
+        self.assertEqual(result.retrieval_summary.retrieval_status, "success")
+        self.assertEqual(result.retrieval_summary.fallback_count, 0)
+        self.assertEqual(result.literature_records[-1].title, "Paper 5")
 
     def test_topic_translation_failure_falls_back_to_original_query(self) -> None:
         class InvalidTranslationGateway:

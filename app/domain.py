@@ -6,6 +6,9 @@ from typing import Any, Literal
 
 ProjectStatus = Literal["created", "running", "completed", "failed"]
 TemplateSourceType = Literal["user_upload", "library_default"]
+EvidenceSourceType = Literal["abstract", "pdf", "manual", "fallback"]
+PdfParseStatus = Literal["not_applicable", "success", "degraded", "failed"]
+RetrievalStatus = Literal["success", "partial", "fallback"]
 MODEL_TASK_TYPES = (
     "planner",
     "reviewer",
@@ -111,6 +114,15 @@ class TemplateManifest:
 
 
 @dataclass(slots=True)
+class RetrievalSummary:
+    retrieval_status: RetrievalStatus = "fallback"
+    valid_paper_count: int = 0
+    fallback_count: int = 0
+    failed_sources: list[str] = field(default_factory=list)
+    needs_review_count: int = 0
+
+
+@dataclass(slots=True)
 class LiteratureRecord:
     source: str
     title: str
@@ -130,9 +142,13 @@ class LiteratureRecord:
     metrics: str = ""
     conclusion: str = ""
     limitations: str = ""
-    evidence_source: str = "abstract"
+    evidence_source: EvidenceSourceType = "abstract"
     confidence_score: float = 0.0
     evidence_quote: str = ""
+    pdf_parse_status: PdfParseStatus = "not_applicable"
+    pdf_parse_message: str = ""
+    needs_review: bool = False
+    review_note: str = ""
 
 
 @dataclass(slots=True)
@@ -180,6 +196,7 @@ class ProjectState:
     uploaded_pdf_paths: list[str] = field(default_factory=list)
     literature_records: list[LiteratureRecord] = field(default_factory=list)
     retrieval_diagnostics: list[dict[str, Any]] = field(default_factory=list)
+    retrieval_summary: RetrievalSummary = field(default_factory=RetrievalSummary)
     survey_table: list[dict[str, Any]] = field(default_factory=list)
     literature_detail_fields: list[str] = field(default_factory=list)
     innovation_candidates: list[InnovationCandidate] = field(default_factory=list)
