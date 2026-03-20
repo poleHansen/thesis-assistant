@@ -55,6 +55,13 @@ export function ProjectDetailPage() {
         return "待运行";
     }
   }, [project?.retrieval_summary?.retrieval_status]);
+  const resultTables = project?.result_schema.result_tables ?? [];
+  const resultFigures = project?.result_schema.result_figures ?? [];
+  const resultFindings = project?.result_schema.result_key_findings ?? [];
+  const consistencyChecks = project?.result_schema.consistency_summary?.checks ?? [];
+  const pptMappingEntries = project?.result_schema.ppt_section_mapping
+    ? Object.entries(project.result_schema.ppt_section_mapping)
+    : [];
 
   if (!projectId) {
     return (
@@ -157,6 +164,116 @@ export function ProjectDetailPage() {
                 recommendation={project.result_schema.innovation_recommendation}
               />
               <ExperimentSummary plan={project.experiment_plan} />
+              <section className="panel glass-card">
+                <div className="panel__header">
+                  <div>
+                    <p className="eyebrow">Milestone Three</p>
+                    <h3>实现层与交付层摘要</h3>
+                  </div>
+                </div>
+                <div className="stack-list">
+                  <article className="paper-card">
+                    <strong>结果分析摘要</strong>
+                    <p>
+                      {typeof project.result_schema.result_analysis_text === "string" &&
+                      project.result_schema.result_analysis_text
+                        ? project.result_schema.result_analysis_text
+                        : "运行后会展示主结果、消融和论文/PPT 复用摘要。"}
+                    </p>
+                    {resultFindings.length > 0 ? (
+                      <div className="paper-card__details">
+                        <small>关键发现</small>
+                        <ul className="result-list">
+                          {resultFindings.map((item) => (
+                            <li key={item}>{item}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : null}
+                  </article>
+                  <article className="paper-card">
+                    <strong>结果表与图表说明</strong>
+                    {resultTables.length === 0 && resultFigures.length === 0 ? (
+                      <p className="muted">运行后会展示主结果表、消融表、训练曲线和对比图说明。</p>
+                    ) : (
+                      <div className="stack-list">
+                        {resultTables.map((table, index) => (
+                          <div key={`${table.title ?? table.name ?? "table"}-${index}`} className="result-block">
+                            <div className="paper-card__meta-row">
+                              <span className="paper-card__badge">表格</span>
+                              <strong>{table.title ?? table.name ?? `结果表 ${index + 1}`}</strong>
+                            </div>
+                            {table.summary ? <p>{table.summary}</p> : null}
+                            {table.columns?.length ? <small>字段：{table.columns.join("、")}</small> : null}
+                            {table.rows?.[0] ? (
+                              <small>
+                                示例：
+                                {Object.entries(table.rows[0])
+                                  .map(([key, value]) => `${key}=${value}`)
+                                  .join("；")}
+                              </small>
+                            ) : null}
+                          </div>
+                        ))}
+                        {resultFigures.map((figure, index) => (
+                          <div key={`${figure.title ?? figure.name ?? "figure"}-${index}`} className="result-block">
+                            <div className="paper-card__meta-row">
+                              <span className="paper-card__badge">图表</span>
+                              <strong>{figure.title ?? figure.name ?? `结果图 ${index + 1}`}</strong>
+                            </div>
+                            {figure.caption ? <p>{figure.caption}</p> : null}
+                            {figure.insight ? <small>分析：{figure.insight}</small> : null}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </article>
+                  <article className="paper-card">
+                    <strong>一致性检查</strong>
+                    {project.result_schema.consistency_summary ? (
+                      <div className="stack-list">
+                        {consistencyChecks.length > 0 ? (
+                          <div className="consistency-grid">
+                            {consistencyChecks.map((check) => (
+                              <div key={check.key} className="consistency-item">
+                                <div className="paper-card__meta-row">
+                                  <span className={`paper-card__badge ${check.aligned ? "" : "paper-card__badge--warning"}`}>
+                                    {check.aligned ? "已对齐" : "待复核"}
+                                  </span>
+                                  <strong>{check.label}</strong>
+                                </div>
+                                <small>{check.detail}</small>
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
+                        {project.result_schema.consistency_summary.warnings?.map((warning) => (
+                          <p key={warning} className="muted">
+                            {warning}
+                          </p>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="muted">运行后会展示步骤、代码、论文之间的基础一致性状态。</p>
+                    )}
+                  </article>
+                  <article className="paper-card">
+                    <strong>论文 / PPT 映射</strong>
+                    {pptMappingEntries.length === 0 ? (
+                      <p className="muted">运行后会展示方法、实验、结果、结论页面与论文章节的映射关系。</p>
+                    ) : (
+                      <div className="stack-list">
+                        {pptMappingEntries.map(([slide, section]) => (
+                          <div key={`${slide}-${section}`} className="mapping-row">
+                            <span>{slide}</span>
+                            <small>{section}</small>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </article>
+                </div>
+              </section>
               <section className="panel glass-card">
                 <div className="panel__header">
                   <div>

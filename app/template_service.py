@@ -29,7 +29,7 @@ DEFAULT_USER_STYLE_MAPPING = {
     "caption": "Caption",
 }
 
-PLACEHOLDER_PATTERN = re.compile(r"\{\{\s*([\w\-.\u4e00-\u9fff]+)\s*\}\}")
+PLACEHOLDER_PATTERN = re.compile(r"\{\{\s*([\w\-.\u4e00-\u9fff ]+)\s*\}\}")
 
 
 class TemplateService:

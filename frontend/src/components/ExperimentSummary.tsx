@@ -6,6 +6,7 @@ interface ExperimentSummaryProps {
 }
 
 export function ExperimentSummary({ plan }: ExperimentSummaryProps) {
+  const commandEntries = plan ? Object.entries(plan.run_commands) : [];
   return (
     <section className="panel glass-card">
       <div className="panel__header">
@@ -32,6 +33,32 @@ export function ExperimentSummary({ plan }: ExperimentSummaryProps) {
           <div>
             <span>消融</span>
             <p>{joinLines(plan.ablations)}</p>
+          </div>
+          <div>
+            <span>环境</span>
+            <p>{joinLines(plan.environment)}</p>
+          </div>
+          <div>
+            <span>参数</span>
+            <p>{joinLines(plan.parameters)}</p>
+          </div>
+          <div className="summary-grid__full">
+            <span>运行命令</span>
+            <ul>
+              {commandEntries.map(([name, command]) => (
+                <li key={name}>
+                  {name}：{command}
+                </li>
+              ))}
+            </ul>
+          </div>
+          <div className="summary-grid__full">
+            <span>结果文件</span>
+            <ul>
+              {plan.result_files.map((path) => (
+                <li key={path}>{path}</li>
+              ))}
+            </ul>
           </div>
           <div className="summary-grid__full">
             <span>步骤</span>

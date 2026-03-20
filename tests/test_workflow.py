@@ -7,12 +7,20 @@ from types import SimpleNamespace
 import uuid
 
 from app.agents import (
+    ConsistencyCheckerAgent,
+    ExperimentDesignerAgent,
     FeasibilityReviewerAgent,
     GapAnalystAgent,
     NoveltyJudgeAgent,
+    ProcedureWriterAgent,
     ReaderAgent,
+    ResultAnalystAgent,
+    OutlineWriterAgent,
     RetrieverAgent,
+    SectionWriterAgent,
     TopicPlannerAgent,
+    CodeAgent,
+    ResultSchemaAgent,
     _build_gap_analysis_summary,
     _estimate_candidate_scores,
 )
@@ -237,6 +245,167 @@ class WorkflowTest(unittest.TestCase):
         self.assertGreater(real_scores["evidence_strength"], fallback_scores["evidence_strength"])
         self.assertGreater(real_scores["novelty_score"], fallback_scores["novelty_score"])
         self.assertLess(real_scores["risk_score"], fallback_scores["risk_score"])
+
+    def test_experiment_designer_populates_milestone_three_fields(self) -> None:
+        state = ProjectState(
+            project_id="project-plan-fields",
+            request=ProjectCreate(topic="中文文本分类算法", paper_type="algorithm"),
+            literature_records=[
+                LiteratureRecord(
+                    source="semantic_scholar",
+                    title="Paper A",
+                    authors="Tester",
+                    year=2025,
+                    abstract="Abstract",
+                    doi_or_url="https://example.com/a",
+                    problem="中文文本分类",
+                    method="Transformer 编码器",
+                    dataset="THUCNews, Fudan",
+                    metrics="Accuracy, F1",
+                    conclusion="方法有效",
+                    limitations="缺少鲁棒性评测",
+                    confidence_score=0.82,
+                )
+            ],
+            selected_innovation=InnovationCandidate(
+                claim="面向中文文本分类的轻量增强方案",
+                supporting_papers=["Paper A"],
+                contrast_papers=[],
+                novelty_reason="有效",
+                feasibility_score=8.0,
+                risk="可控",
+                verification_plan="补充对比实验",
+            ),
+        )
+
+        planned = ExperimentDesignerAgent(ModelGateway(ModelSettingsStore.default_settings())).run(state)
+
+        self.assertTrue(planned.experiment_plan)
+        assert planned.experiment_plan is not None
+        self.assertTrue(planned.experiment_plan.parameters)
+        self.assertTrue(planned.experiment_plan.run_commands.get("train"))
+        self.assertIn("results/eval_metrics.json", planned.experiment_plan.result_files)
+        self.assertTrue(planned.experiment_plan.evidence_links)
+        self.assertIn("milestone_three_contract", planned.result_schema)
+
+    def test_procedure_and_code_agent_keep_commands_and_result_files_consistent(self) -> None:
+        gateway = ModelGateway(ModelSettingsStore.default_settings())
+        state = ProjectState(
+            project_id="project-procedure-code",
+            request=ProjectCreate(topic="中文文本分类算法"),
+        )
+        state = ExperimentDesignerAgent(gateway).run(state)
+        state = ProcedureWriterAgent(gateway).run(state)
+        state = ResultSchemaAgent(gateway).run(state)
+        state = CodeAgent(gateway).run(state)
+
+        procedure = str(state.result_schema.get("procedure_document", ""))
+        readme = state.generated_code_files.get("README.md", "")
+        assert state.experiment_plan is not None
+        for command in state.experiment_plan.run_commands.values():
+            self.assertIn(command, procedure)
+            self.assertIn(command, readme)
+        for result_file in state.experiment_plan.result_files:
+            self.assertIn(result_file, procedure)
+            self.assertIn(result_file, readme)
+        self.assertTrue(all(path in state.generated_code_files for path in [
+            "train.py",
+            "eval.py",
+            "infer.py",
+            "configs/default.yaml",
+            "src/model.py",
+            "src/data.py",
+            "README.md",
+            "requirements.txt",
+        ]))
+
+    def test_result_analyst_populates_structured_result_payload(self) -> None:
+        gateway = ModelGateway(ModelSettingsStore.default_settings())
+        state = ProjectState(
+            project_id="project-result-analyst",
+            request=ProjectCreate(topic="中文文本分类算法"),
+            selected_innovation=InnovationCandidate(
+                claim="面向中文文本分类的轻量增强方案",
+                supporting_papers=["Paper A"],
+                contrast_papers=["Paper B"],
+                novelty_reason="有效",
+                feasibility_score=8.0,
+                risk="可控",
+                verification_plan="补充对比实验",
+            ),
+        )
+        state = ExperimentDesignerAgent(gateway).run(state)
+        state = ResultSchemaAgent(gateway).run(state)
+        state = ResultAnalystAgent(gateway).run(state)
+
+        self.assertTrue(state.result_schema.get("result_tables"))
+        self.assertTrue(state.result_schema.get("result_figures"))
+        self.assertTrue(state.result_schema.get("result_analysis_text"))
+        self.assertTrue(state.result_schema.get("result_summary_for_paper"))
+        self.assertTrue(state.result_schema.get("result_summary_for_ppt"))
+        self.assertTrue(state.result_schema.get("result_key_findings"))
+        first_table = state.result_schema.get("result_tables", [])[0]
+        self.assertIn("rows", first_table)
+        self.assertIn("summary", first_table)
+
+    def test_consistency_summary_contains_granular_checks_and_mapping_status(self) -> None:
+        gateway = ModelGateway(ModelSettingsStore.default_settings())
+        state = ProjectState(
+            project_id="project-consistency-granular",
+            request=ProjectCreate(topic="中文文本分类算法"),
+        )
+        state = ExperimentDesignerAgent(gateway).run(state)
+        state = ProcedureWriterAgent(gateway).run(state)
+        state = ResultSchemaAgent(gateway).run(state)
+        state = ResultAnalystAgent(gateway).run(state)
+        state = CodeAgent(gateway).run(state)
+        state.paper_outline = ["实验"]
+        state.paper_sections = {
+            "实验": str(state.result_schema.get("result_summary_for_paper", ""))
+        }
+        state.result_schema["ppt_section_mapping"] = {
+            "方法设计": "方法章节",
+            "实验设置": "实验章节",
+            "结果分析": "实验章节/结果分析段",
+            "结论与展望": "结论章节",
+        }
+
+        reviewed = ConsistencyCheckerAgent(gateway).run(state)
+
+        summary = reviewed.result_schema.get("consistency_summary", {})
+        checks = summary.get("checks", [])
+        self.assertTrue(summary.get("plan_config_aligned"))
+        self.assertTrue(summary.get("ppt_mapping_aligned"))
+        self.assertEqual(len(checks), 5)
+        self.assertTrue(all("label" in item and "detail" in item for item in checks))
+
+    def test_section_writer_reuses_structured_result_content_in_experiment_section(self) -> None:
+        gateway = ModelGateway(ModelSettingsStore.default_settings())
+        state = ProjectState(
+            project_id="project-paper-sections",
+            request=ProjectCreate(topic="道路裂缝检测"),
+            selected_innovation=InnovationCandidate(
+                claim="基于 YOLO 的裂缝检测增强方案",
+                supporting_papers=["Paper A"],
+                contrast_papers=["Paper B"],
+                novelty_reason="有效",
+                feasibility_score=8.0,
+                risk="可控",
+                verification_plan="补充实验",
+            ),
+        )
+        state = ExperimentDesignerAgent(gateway).run(state)
+        state = ProcedureWriterAgent(gateway).run(state)
+        state = ResultSchemaAgent(gateway).run(state)
+        state = ResultAnalystAgent(gateway).run(state)
+        state.paper_outline = ["摘要", "第4章 实验结果与分析", "结论"]
+
+        state = SectionWriterAgent(gateway).run(state)
+
+        experiment_text = state.paper_sections.get("第4章 实验结果与分析", "")
+        self.assertIn(str(state.result_schema.get("result_summary_for_paper", "")), experiment_text)
+        self.assertIn("主结果对比表", experiment_text)
+        self.assertIn("训练曲线", experiment_text)
 
     def test_gap_analyst_falls_back_when_structured_evidence_is_insufficient(self) -> None:
         state = ProjectState(

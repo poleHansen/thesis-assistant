@@ -77,6 +77,62 @@ class ArtifactServiceTest(unittest.TestCase):
         self.assertIn("中文文本分类算法", texts)
         self.assertIn("第1章 绪论", texts)
 
+    @unittest.skipIf(
+        Document is None or Presentation is None,
+        "python-docx or python-pptx is not installed in the current environment",
+    )
+    def test_render_all_resolves_section_aliases_and_removes_placeholders(self) -> None:
+        word_template = self.root / "alias-template.docx"
+        ppt_template = self.root / "alias-template.pptx"
+        template = Document()
+        template.add_paragraph("{{cover.题目}}", style="Title")
+        heading = template.add_heading("第1章 绪论", level=1)
+        heading.runs[0].bold = True
+        body = template.add_paragraph()
+        body_run = body.add_run("{{section.绪论}}")
+        body_run.bold = True
+        template.save(word_template)
+        Presentation().save(ppt_template)
+
+        state = self._build_state(str(word_template), str(ppt_template))
+        state.paper_outline = ["引言"]
+        state.paper_sections = {"引言": "这里是通过章节别名回填的正文内容。"}
+
+        result = self.service.render_all(state)
+
+        thesis = Document(result.artifacts.thesis_docx)
+        texts = [paragraph.text for paragraph in thesis.paragraphs if paragraph.text.strip()]
+        self.assertIn("这里是通过章节别名回填的正文内容。", texts)
+        self.assertTrue(all("{{section." not in text for text in texts))
+        body_paragraph = next(paragraph for paragraph in thesis.paragraphs if "这里是通过章节别名回填的正文内容。" in paragraph.text)
+        self.assertTrue(body_paragraph.runs)
+        self.assertTrue(body_paragraph.runs[0].bold)
+
+    @unittest.skipIf(
+        Document is None or Presentation is None,
+        "python-docx or python-pptx is not installed in the current environment",
+    )
+    def test_render_all_writes_fallback_notice_for_missing_sections(self) -> None:
+        word_template = self.root / "missing-template.docx"
+        ppt_template = self.root / "missing-template.pptx"
+        template = Document()
+        template.add_heading("第4章 实验结果与分析", level=1)
+        template.add_paragraph("{{section.第4章 实验结果与分析}}")
+        template.save(word_template)
+        Presentation().save(ppt_template)
+
+        state = self._build_state(str(word_template), str(ppt_template))
+        state.paper_outline = []
+        state.paper_sections = {}
+
+        result = self.service.render_all(state)
+
+        thesis = Document(result.artifacts.thesis_docx)
+        thesis_text = "\n".join(paragraph.text for paragraph in thesis.paragraphs)
+        self.assertIn("待补充", thesis_text)
+        self.assertNotIn("{{section.", thesis_text)
+        self.assertTrue(any("缺少正文内容" in warning for warning in state.warnings))
+
     def test_render_all_falls_back_when_template_files_are_invalid(self) -> None:
         word_template = self.root / "invalid-template.docx"
         ppt_template = self.root / "invalid-template.pptx"
@@ -246,6 +302,75 @@ class ArtifactServiceTest(unittest.TestCase):
         self.assertIn("对照依据", report)
         self.assertIn("当前名次说明", report)
 
+    def test_thesis_and_ppt_consume_structured_result_analysis(self) -> None:
+        state = self._build_state("", "")
+        state.paper_outline = ["摘要", "实验", "结论"]
+        state.paper_sections = {
+            "摘要": "摘要内容",
+            "实验": "实验部分概述",
+            "结论": "结论内容",
+        }
+        state.ppt_outline = ["方法设计", "实验设置", "结果分析", "结论与展望"]
+        state.result_schema.update(
+            {
+                "result_analysis_text": "主结果优于基线，消融实验验证关键模块有效。",
+                "result_summary_for_paper": "论文实验章节复用了主结果和消融结论。",
+                "result_summary_for_ppt": "PPT 展示主结果对比、消融和训练曲线。",
+                "result_tables": [
+                    {
+                        "title": "主结果对比表",
+                        "columns": ["方法", "Accuracy", "F1"],
+                        "rows": [{"方法": "本文方案", "Accuracy": 0.91, "F1": 0.89}],
+                        "summary": "本文方案在 Accuracy 和 F1 上均优于基线。",
+                    }
+                ],
+                "result_figures": [
+                    {
+                        "title": "训练曲线",
+                        "caption": "训练后期收敛稳定。",
+                        "insight": "模型在有限轮次内完成收敛。",
+                    }
+                ],
+                "ppt_section_mapping": {
+                    "结果分析": "实验章节/结果分析段",
+                    "结论与展望": "结论章节",
+                },
+            }
+        )
+
+        result = self.service.render_all(state)
+
+        thesis_path = Path(result.artifacts.thesis_docx or "")
+        ppt_path = Path(result.artifacts.defense_pptx or "")
+        self.assertTrue(thesis_path.exists())
+        self.assertTrue(ppt_path.exists())
+        if thesis_path.suffix == ".md":
+            thesis_text = thesis_path.read_text(encoding="utf-8")
+        elif Document is not None:
+            thesis_doc = Document(thesis_path)
+            thesis_text = "\n".join(paragraph.text for paragraph in thesis_doc.paragraphs)
+        else:
+            thesis_text = ""
+        if ppt_path.suffix == ".txt":
+            ppt_text = ppt_path.read_text(encoding="utf-8")
+        elif Presentation is not None:
+            presentation = Presentation(ppt_path)
+            slide_texts: list[str] = []
+            for slide in presentation.slides:
+                for shape in slide.shapes:
+                    text = getattr(shape, "text", "")
+                    if text:
+                        slide_texts.append(text)
+            ppt_text = "\n".join(slide_texts)
+        else:
+            ppt_text = ""
+        self.assertIn("结果分析摘要", thesis_text)
+        self.assertIn("主结果对比表", thesis_text)
+        self.assertIn("训练曲线", thesis_text)
+        self.assertIn("表格：主结果对比表", ppt_text)
+        self.assertIn("图表：训练曲线", ppt_text)
+        self.assertIn("章节映射：实验章节/结果分析段", ppt_text)
+
     def _build_state(self, word_template_path: str, ppt_template_path: str) -> ProjectState:
         state = ProjectState(
             project_id="project-001",
@@ -262,7 +387,40 @@ class ArtifactServiceTest(unittest.TestCase):
         state.paper_outline = ["第1章 绪论"]
         state.paper_sections = {"第1章 绪论": "这是论文正文。"}
         state.ppt_outline = ["研究背景", "方法设计", "实验结果"]
+        state.result_schema["result_summary_for_ppt"] = "主结果优于基线，消融验证关键模块有效。"
+        state.result_schema["ppt_section_mapping"] = {"方法设计": "方法章节", "实验结果": "实验章节"}
         return state
+
+    def test_experiment_plan_export_contains_milestone_three_fields(self) -> None:
+        state = self._build_state("", "")
+        state.experiment_plan = __import__("app.domain", fromlist=["ExperimentPlan"]).ExperimentPlan(
+            dataset=["THUCNews"],
+            baselines=["Transformer"],
+            metrics=["Accuracy", "F1"],
+            ablations=["去除增强模块"],
+            environment=["Python 3.11"],
+            parameters=["seed=42"],
+            dataset_notes=["使用官方训练/验证划分"],
+            baseline_notes=["基线来自主流文献"],
+            metric_notes=["Accuracy 与 F1 为核心指标"],
+            steps=["训练基线", "运行完整模型"],
+            expected_outputs=["主结果表"],
+            run_commands={"train": "python train.py --config configs/default.yaml"},
+            result_files=["results/eval_metrics.json"],
+            evidence_links=["Paper A"],
+        )
+
+        result = self.service.render_all(state)
+
+        exported = Path(result.artifacts.experiment_plan or "")
+        self.assertTrue(exported.exists())
+        if exported.suffix == ".docx" and Document is not None:
+            text = "\n".join(paragraph.text for paragraph in Document(exported).paragraphs)
+        else:
+            text = exported.read_text(encoding="utf-8")
+        self.assertIn("运行命令", text)
+        self.assertIn("结果文件", text)
+        self.assertIn("证据来源", text)
 
 
 if __name__ == "__main__":

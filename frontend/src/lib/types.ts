@@ -167,8 +167,39 @@ export interface ExperimentPlan {
   metrics: string[];
   ablations: string[];
   environment: string[];
+  parameters: string[];
+  dataset_notes: string[];
+  baseline_notes: string[];
+  metric_notes: string[];
   steps: string[];
   expected_outputs: string[];
+  run_commands: Record<string, string>;
+  result_files: string[];
+  evidence_links: string[];
+}
+
+export interface ResultTable {
+  name?: string;
+  title?: string;
+  columns: string[];
+  rows?: Array<Record<string, string | number>>;
+  source?: string;
+  summary?: string;
+}
+
+export interface ResultFigure {
+  name?: string;
+  title?: string;
+  caption?: string;
+  source?: string;
+  insight?: string;
+}
+
+export interface ConsistencyCheckItem {
+  key: string;
+  label: string;
+  aligned: boolean;
+  detail: string;
 }
 
 export interface ArtifactBundle {
@@ -202,6 +233,23 @@ export interface ProjectState {
     gap_analysis?: GapAnalysisSummary;
     gap_analysis_overview?: string;
     innovation_recommendation?: InnovationRecommendation;
+    procedure_document?: string;
+    result_tables?: ResultTable[];
+    result_figures?: ResultFigure[];
+    result_analysis_text?: string;
+    result_summary_for_paper?: string;
+    result_summary_for_ppt?: string;
+    result_key_findings?: string[];
+    ppt_section_mapping?: Record<string, string>;
+    consistency_summary?: {
+      procedure_readme_aligned?: boolean;
+      result_files_aligned?: boolean;
+      plan_config_aligned?: boolean;
+      paper_experiment_aligned?: boolean;
+      ppt_mapping_aligned?: boolean;
+      checks?: ConsistencyCheckItem[];
+      warnings?: string[];
+    };
     [key: string]: unknown;
   };
   generated_code_files: Record<string, string>;

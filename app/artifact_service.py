@@ -11,7 +11,16 @@ from app.domain import ArtifactBundle, ProjectState, TemplateManifest
 from app.storage import ProjectStorage
 
 
-DOCX_PLACEHOLDER_PATTERN = re.compile(r"\{\{\s*([\w\-.\u4e00-\u9fff]+)\s*\}\}")
+DOCX_PLACEHOLDER_PATTERN = re.compile(r"\{\{\s*([\w\-.\u4e00-\u9fff ]+)\s*\}\}")
+
+SECTION_ALIAS_GROUPS = [
+    ["引言", "绪论", "第1章 绪论", "第一章 绪论"],
+    ["方法", "方法设计", "方法设计与实现", "第3章 方法设计与实现", "第三章 方法设计与实现"],
+    ["实验", "实验结果与分析", "实验设计", "第4章 实验结果与分析", "第四章 实验结果与分析"],
+    ["结论", "总结与展望", "结论与展望", "第5章 总结与展望", "第五章 总结与展望"],
+    ["摘要", "中文摘要"],
+    ["参考文献"],
+]
 
 
 class ArtifactService:
@@ -277,12 +286,23 @@ class ArtifactService:
             [
                 "# 实验设计书",
                 f"数据集：{', '.join(plan.dataset)}",
+                *[f"- 数据说明：{item}" for item in plan.dataset_notes],
                 f"基线：{', '.join(plan.baselines)}",
+                *[f"- 基线说明：{item}" for item in plan.baseline_notes],
                 f"指标：{', '.join(plan.metrics)}",
+                *[f"- 指标说明：{item}" for item in plan.metric_notes],
                 f"消融：{', '.join(plan.ablations)}",
                 f"环境：{', '.join(plan.environment)}",
+                "参数：",
+                *[f"- {item}" for item in plan.parameters],
                 "步骤：",
                 *[f"- {step}" for step in plan.steps],
+                "运行命令：",
+                *[f"- {label}: {command}" for label, command in plan.run_commands.items()],
+                "结果文件：",
+                *[f"- {item}" for item in plan.result_files],
+                "证据来源：",
+                *[f"- {item}" for item in plan.evidence_links],
                 "预期输出：",
                 *[f"- {item}" for item in plan.expected_outputs],
             ]
@@ -300,14 +320,94 @@ class ArtifactService:
         for section in state.paper_outline:
             parts.append(f"## {section}")
             parts.append(state.paper_sections.get(section, ""))
+            if "实验" in section:
+                parts.extend(self._format_result_analysis_blocks(state))
             parts.append("")
         return "\n".join(parts)
 
     def _ppt_text(self, state: ProjectState) -> str:
         lines = ["答辩 PPT 结构", ""]
+        ppt_summary = str(state.result_schema.get("result_summary_for_ppt", "")).strip()
+        mapping = state.result_schema.get("ppt_section_mapping", {})
+        result_tables = state.result_schema.get("result_tables", [])
+        result_figures = state.result_schema.get("result_figures", [])
         for idx, slide in enumerate(state.ppt_outline, start=1):
             lines.append(f"{idx}. {slide}")
+            if slide == "方法设计" and state.selected_innovation:
+                lines.append(f"- 方法摘要：{state.selected_innovation.claim}")
+            if slide == "实验设置" and state.experiment_plan:
+                lines.append(f"- 数据集：{'、'.join(state.experiment_plan.dataset)}")
+                lines.append(f"- 指标：{'、'.join(state.experiment_plan.metrics)}")
+            if slide == "结果分析" and ppt_summary:
+                lines.append(f"- 结果摘要：{ppt_summary}")
+                lines.extend(self._format_result_slide_details(result_tables, result_figures))
+            if isinstance(mapping, dict) and slide in mapping:
+                lines.append(f"- 章节映射：{mapping[slide]}")
         return "\n".join(lines)
+
+    def _format_result_analysis_blocks(self, state: ProjectState) -> list[str]:
+        blocks: list[str] = []
+        analysis_text = str(state.result_schema.get("result_analysis_text", "")).strip()
+        if analysis_text:
+            blocks.append("### 结果分析摘要")
+            blocks.append(analysis_text)
+        result_tables = state.result_schema.get("result_tables", [])
+        if isinstance(result_tables, list):
+            for table in result_tables[:2]:
+                if not isinstance(table, dict):
+                    continue
+                title = str(table.get("title") or table.get("name") or "结果表").strip()
+                summary = str(table.get("summary", "")).strip()
+                columns = table.get("columns", [])
+                rows = table.get("rows", [])
+                blocks.append(f"### {title}")
+                if summary:
+                    blocks.append(summary)
+                if isinstance(columns, list) and columns:
+                    blocks.append(f"- 字段：{'、'.join(str(item) for item in columns)}")
+                if isinstance(rows, list) and rows:
+                    first_row = rows[0]
+                    if isinstance(first_row, dict):
+                        row_text = "；".join(f"{key}={value}" for key, value in first_row.items())
+                        blocks.append(f"- 示例行：{row_text}")
+        result_figures = state.result_schema.get("result_figures", [])
+        if isinstance(result_figures, list):
+            for figure in result_figures[:2]:
+                if not isinstance(figure, dict):
+                    continue
+                title = str(figure.get("title") or figure.get("name") or "结果图").strip()
+                caption = str(figure.get("caption", "")).strip()
+                insight = str(figure.get("insight", "")).strip()
+                blocks.append(f"### {title}")
+                if caption:
+                    blocks.append(f"- 图表说明：{caption}")
+                if insight:
+                    blocks.append(f"- 分析结论：{insight}")
+        return blocks
+
+    def _format_result_slide_details(self, result_tables: object, result_figures: object) -> list[str]:
+        lines: list[str] = []
+        if isinstance(result_tables, list):
+            for table in result_tables[:2]:
+                if not isinstance(table, dict):
+                    continue
+                title = str(table.get("title") or table.get("name") or "结果表").strip()
+                summary = str(table.get("summary", "")).strip()
+                if title:
+                    lines.append(f"- 表格：{title}")
+                if summary:
+                    lines.append(f"- 结论：{summary}")
+        if isinstance(result_figures, list):
+            for figure in result_figures[:2]:
+                if not isinstance(figure, dict):
+                    continue
+                title = str(figure.get("title") or figure.get("name") or "结果图").strip()
+                insight = str(figure.get("insight", "")).strip()
+                if title:
+                    lines.append(f"- 图表：{title}")
+                if insight:
+                    lines.append(f"- 图示结论：{insight}")
+        return lines
 
     def _write_text(self, path: Path, content: str) -> str:
         path.write_text(content, encoding="utf-8")
@@ -360,8 +460,37 @@ class ArtifactService:
             values.setdefault(f"cover.{field_name}", "")
         section_names = list(dict.fromkeys([*manifest.section_mapping, *state.paper_outline, *state.paper_sections.keys()]))
         for section in section_names:
-            values[f"section.{section}"] = state.paper_sections.get(section, "")
+            section_text = self._resolve_section_text(section, state)
+            values[f"section.{section}"] = section_text
+            for alias in self._section_aliases(section):
+                values.setdefault(f"section.{alias}", section_text)
         return values
+
+    def _resolve_section_text(self, section: str, state: ProjectState) -> str:
+        direct = str(state.paper_sections.get(section, "")).strip()
+        if direct:
+            return direct
+        for alias in self._section_aliases(section):
+            alias_text = str(state.paper_sections.get(alias, "")).strip()
+            if alias_text:
+                if f"论文模板章节“{section}”使用别名“{alias}”填充。" not in state.warnings:
+                    state.warnings.append(f"论文模板章节“{section}”使用别名“{alias}”填充。")
+                return alias_text
+        if f"论文模板章节“{section}”缺少正文内容，已写入待补充提示。" not in state.warnings:
+            state.warnings.append(f"论文模板章节“{section}”缺少正文内容，已写入待补充提示。")
+        return f"【待补充：{section} 内容尚未生成，请检查章节映射或上游结果摘要。】"
+
+    def _section_aliases(self, section: str) -> list[str]:
+        aliases = [section]
+        stripped = re.sub(r"^第[0-9一二三四五六七八九十]+章\s*", "", section).strip()
+        if stripped and stripped not in aliases:
+            aliases.append(stripped)
+        for group in SECTION_ALIAS_GROUPS:
+            if section in group or stripped in group:
+                for candidate in group:
+                    if candidate not in aliases:
+                        aliases.append(candidate)
+        return aliases
 
     def _replace_docx_placeholders(self, document, placeholder_values: dict[str, str]) -> int:
         replaced = 0
@@ -385,14 +514,25 @@ class ArtifactService:
             nonlocal replaced_count
             key = match.group(1)
             if key not in placeholder_values:
-                return match.group(0)
+                replaced_count += 1
+                return f"【待补充：{key}】"
             replaced_count += 1
             return placeholder_values[key]
 
         updated = DOCX_PLACEHOLDER_PATTERN.sub(replace_match, original)
         if replaced_count:
-            paragraph.text = updated
+            self._update_paragraph_runs(paragraph, updated)
         return replaced_count
+
+    def _update_paragraph_runs(self, paragraph, updated: str) -> None:
+        runs = list(paragraph.runs)
+        if not runs:
+            paragraph.add_run(updated)
+            return
+        first_run = runs[0]
+        first_run.text = updated
+        for run in runs[1:]:
+            run.text = ""
 
     def _append_docx_line(self, document, line: str, manifest: TemplateManifest | None) -> None:
         if line.startswith("# "):

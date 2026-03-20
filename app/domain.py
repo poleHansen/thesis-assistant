@@ -186,6 +186,13 @@ class ExperimentPlan:
     environment: list[str]
     steps: list[str]
     expected_outputs: list[str]
+    parameters: list[str] = field(default_factory=list)
+    dataset_notes: list[str] = field(default_factory=list)
+    baseline_notes: list[str] = field(default_factory=list)
+    metric_notes: list[str] = field(default_factory=list)
+    run_commands: dict[str, str] = field(default_factory=dict)
+    result_files: list[str] = field(default_factory=list)
+    evidence_links: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)

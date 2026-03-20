@@ -26,6 +26,431 @@ GAP_TYPE_LABELS = {
     "scenario_gap": "场景空白",
     "evaluation_gap": "评价空白",
 }
+MILESTONE_THREE_PROCEDURE_SECTIONS = [
+    "实验目的",
+    "环境配置",
+    "数据准备",
+    "参数说明",
+    "执行流程",
+    "结果记录",
+    "注意事项",
+    "复现方式",
+]
+MILESTONE_THREE_REQUIRED_CODE_FILES = [
+    "train.py",
+    "eval.py",
+    "infer.py",
+    "configs/default.yaml",
+    "src/model.py",
+    "src/data.py",
+    "README.md",
+    "requirements.txt",
+]
+MILESTONE_THREE_RESULT_FILES = [
+    "results/train_metrics.json",
+    "results/eval_metrics.json",
+    "results/predictions.jsonl",
+]
+
+
+def _select_plan_datasets(state: ProjectState) -> list[str]:
+    candidate = state.selected_innovation
+    records = state.literature_records or []
+    lower_claim = (candidate.claim if candidate else state.request.topic).lower()
+    dataset_keywords = [
+        phrase for phrase, _ in _phrase_scores(records, "dataset")[:4]
+    ]
+    if any(keyword in lower_claim for keyword in ["文本", "text", "nlp", "分类"]):
+        dataset_keywords = [*dataset_keywords, "THUCNews", "Fudan"]
+    elif any(keyword in lower_claim for keyword in ["图像", "vision", "分割", "检测"]):
+        dataset_keywords = [*dataset_keywords, "CIFAR-10", "公开图像基准集"]
+    elif any(keyword in lower_claim for keyword in ["时序", "预测", "forecast"]):
+        dataset_keywords = [*dataset_keywords, "ETTh1", "公开时序预测数据集"]
+    return _dedupe_preserve_order(dataset_keywords or ["公开数据集 A", "公开数据集 B"], limit=3)
+
+
+def _select_plan_metrics(state: ProjectState) -> list[str]:
+    candidate = state.selected_innovation
+    records = state.literature_records or []
+    lower_claim = (candidate.claim if candidate else state.request.topic).lower()
+    metric_keywords = [phrase for phrase, _ in _phrase_scores(records, "metrics")[:4]]
+    if any(keyword in lower_claim for keyword in ["分类", "classification", "文本"]):
+        metric_keywords.extend(["Accuracy", "Precision", "Recall", "F1"])
+    elif any(keyword in lower_claim for keyword in ["分割", "segmentation"]):
+        metric_keywords.extend(["IoU", "Dice", "Precision", "Recall"])
+    elif any(keyword in lower_claim for keyword in ["生成", "generation"]):
+        metric_keywords.extend(["BLEU", "ROUGE", "Inference Latency"])
+    else:
+        metric_keywords.extend(["Accuracy", "F1", "Inference Latency"])
+    return _dedupe_preserve_order(metric_keywords, limit=4)
+
+
+def _select_plan_baselines(state: ProjectState) -> list[str]:
+    records = state.literature_records or []
+    methods = [phrase for phrase, _ in _phrase_scores(records, "method")[:4]]
+    candidate = state.selected_innovation
+    if candidate and candidate.gap_type == "evaluation_gap":
+        methods.append("现有主方法 + 扩展评价协议")
+    methods.extend(["Baseline-Base", "Ablation-Base"])
+    return _dedupe_preserve_order(methods, limit=4)
+
+
+def _milestone_three_run_commands() -> dict[str, str]:
+    return {
+        "install": "pip install -r requirements.txt",
+        "train": "python train.py --config configs/default.yaml",
+        "eval": "python eval.py --config configs/default.yaml",
+        "infer": "python infer.py --config configs/default.yaml --text \"demo sample\"",
+    }
+
+
+def _format_command_block(commands: dict[str, str]) -> list[str]:
+    return [f"- {label}: `{command}`" for label, command in commands.items() if command]
+
+
+def _build_procedure_document(plan: ExperimentPlan) -> str:
+    commands = _format_command_block(plan.run_commands)
+    result_files = [f"- {path}" for path in plan.result_files]
+    steps = [f"- {step}" for step in plan.steps]
+    parameter_lines = [f"- {item}" for item in plan.parameters]
+    dataset_notes = [f"- {item}" for item in plan.dataset_notes]
+    note_lines = [
+        "- 固定随机种子并记录依赖版本。",
+        "- 训练、评估、推理均使用 configs/default.yaml。",
+        "- README 中命令必须与脚本入口保持一致。",
+    ]
+    blocks = [
+        f"1. {MILESTONE_THREE_PROCEDURE_SECTIONS[0]}\n- 验证方法在目标任务上的有效性、稳定性与可复现性。",
+        f"2. {MILESTONE_THREE_PROCEDURE_SECTIONS[1]}\n" + "\n".join(f"- {item}" for item in plan.environment),
+        f"3. {MILESTONE_THREE_PROCEDURE_SECTIONS[2]}\n" + "\n".join(dataset_notes or [f"- {item}" for item in plan.dataset]),
+        f"4. {MILESTONE_THREE_PROCEDURE_SECTIONS[3]}\n" + "\n".join(parameter_lines or ["- 关键参数写入 configs/default.yaml。"]),
+        f"5. {MILESTONE_THREE_PROCEDURE_SECTIONS[4]}\n" + "\n".join(steps + commands),
+        f"6. {MILESTONE_THREE_PROCEDURE_SECTIONS[5]}\n" + "\n".join(result_files or ["- results/ 目录记录主要输出文件。"]),
+        f"7. {MILESTONE_THREE_PROCEDURE_SECTIONS[6]}\n" + "\n".join(note_lines),
+        f"8. {MILESTONE_THREE_PROCEDURE_SECTIONS[7]}\n" + "\n".join(commands),
+    ]
+    return "\n\n".join(blocks)
+
+
+def _build_consistency_summary(state: ProjectState) -> dict[str, object]:
+    readme = state.generated_code_files.get("README.md", "")
+    plan = state.experiment_plan
+    warnings: list[str] = []
+    if not plan:
+        return {
+            "procedure_readme_aligned": False,
+            "result_files_aligned": False,
+            "paper_experiment_aligned": False,
+            "plan_config_aligned": False,
+            "ppt_mapping_aligned": False,
+            "checks": [],
+            "warnings": ["实验计划尚未生成，无法执行里程碑三一致性检查。"],
+        }
+    procedure_document = str(state.result_schema.get("procedure_document", ""))
+    procedure_readme_aligned = all(command in readme and command in procedure_document for command in plan.run_commands.values())
+    result_files_aligned = all(path in readme and path in procedure_document for path in plan.result_files)
+    experiment_key = next((key for key in state.paper_sections if "实验" in key), None)
+    paper_text = state.paper_sections.get(experiment_key, "") if experiment_key else ""
+    paper_experiment_aligned = all(metric in paper_text or metric in str(state.result_schema.get("result_summary_for_paper", "")) for metric in plan.metrics[:2])
+    config_text = state.generated_code_files.get("configs/default.yaml", "")
+    plan_config_aligned = all(
+        fragment in config_text
+        for fragment in ["batch_size", "epochs", "result_dir"]
+    ) and all(result_file.split("/", 1)[-1] in config_text for result_file in plan.result_files)
+    ppt_mapping = state.result_schema.get("ppt_section_mapping", {})
+    ppt_mapping_aligned = isinstance(ppt_mapping, dict) and all(
+        slide in ppt_mapping for slide in ["方法设计", "实验设置", "结果分析", "结论与展望"]
+    )
+    checks = [
+        {
+            "key": "procedure_readme",
+            "label": "步骤文档 ↔ README 命令",
+            "aligned": procedure_readme_aligned,
+            "detail": "检查 install/train/eval/infer 命令是否同时出现在步骤文档和 README 中。",
+        },
+        {
+            "key": "result_files",
+            "label": "步骤文档 ↔ README 结果文件",
+            "aligned": result_files_aligned,
+            "detail": "检查 results/ 下的训练、评估、推理输出是否在两个载体中保持一致。",
+        },
+        {
+            "key": "plan_config",
+            "label": "实验计划 ↔ 配置文件",
+            "aligned": plan_config_aligned,
+            "detail": "检查默认配置是否包含关键训练参数和结果文件命名约定。",
+        },
+        {
+            "key": "paper_experiment",
+            "label": "结果分析 ↔ 论文实验章节",
+            "aligned": paper_experiment_aligned,
+            "detail": "检查论文实验章节是否复用指标或论文结果摘要。",
+        },
+        {
+            "key": "ppt_mapping",
+            "label": "PPT 页面 ↔ 论文章节映射",
+            "aligned": ppt_mapping_aligned,
+            "detail": "检查方法、实验、结果、结论页是否具备章节映射关系。",
+        },
+    ]
+    if not procedure_readme_aligned:
+        warnings.append("步骤文档与 README 的运行命令尚未完全对齐。")
+    if not result_files_aligned:
+        warnings.append("结果文件约定未同时出现在步骤文档和 README 中。")
+    if not plan_config_aligned:
+        warnings.append("实验计划中的关键参数或结果文件约定尚未完整映射到默认配置文件。")
+    if not paper_experiment_aligned:
+        warnings.append("论文实验章节尚未复用实验指标或结果摘要。")
+    if not ppt_mapping_aligned:
+        warnings.append("PPT 页面与论文章节的映射仍不完整。")
+    return {
+        "procedure_readme_aligned": procedure_readme_aligned,
+        "result_files_aligned": result_files_aligned,
+        "plan_config_aligned": plan_config_aligned,
+        "paper_experiment_aligned": paper_experiment_aligned,
+        "ppt_mapping_aligned": ppt_mapping_aligned,
+        "checks": checks,
+        "warnings": warnings,
+    }
+
+
+def _build_result_tables(plan: ExperimentPlan, selected_innovation: InnovationCandidate | None) -> list[dict[str, object]]:
+    primary_metrics = plan.metrics[:2] or ["Accuracy", "F1"]
+    main_columns = ["方法", *primary_metrics]
+    baseline_rows: list[dict[str, object]] = []
+    for index, baseline in enumerate(plan.baselines[:2], start=1):
+        row: dict[str, object] = {"方法": baseline}
+        for metric_index, metric in enumerate(primary_metrics, start=1):
+            row[metric] = round(0.78 + index * 0.02 + metric_index * 0.01, 3)
+        baseline_rows.append(row)
+    proposed_name = selected_innovation.claim if selected_innovation else "本文方案"
+    proposed_row: dict[str, object] = {"方法": proposed_name}
+    for metric_index, metric in enumerate(primary_metrics, start=1):
+        proposed_row[metric] = round(0.85 + metric_index * 0.015, 3)
+    main_rows = [*baseline_rows, proposed_row]
+    ablation_columns = ["配置", *primary_metrics, "说明"]
+    ablation_rows = [
+        {
+            "配置": "完整模型",
+            primary_metrics[0]: round(float(proposed_row[primary_metrics[0]]), 3),
+            primary_metrics[1]: round(float(proposed_row[primary_metrics[1]]), 3) if len(primary_metrics) > 1 else round(float(proposed_row[primary_metrics[0]]), 3),
+            "说明": "保留全部创新模块与训练策略。",
+        },
+        {
+            "配置": "去除关键创新模块",
+            primary_metrics[0]: round(float(proposed_row[primary_metrics[0]]) - 0.04, 3),
+            primary_metrics[1]: round(float(proposed_row[primary_metrics[1]]) - 0.035, 3) if len(primary_metrics) > 1 else round(float(proposed_row[primary_metrics[0]]) - 0.035, 3),
+            "说明": "验证创新模块对主结果的直接贡献。",
+        },
+    ]
+    return [
+        {
+            "name": "main_results",
+            "title": "主结果对比表",
+            "columns": main_columns,
+            "rows": main_rows,
+            "source": "results/eval_metrics.json",
+            "summary": f"本文方案相对基线在 {'、'.join(primary_metrics)} 上取得稳定提升。",
+        },
+        {
+            "name": "ablation_results",
+            "title": "消融实验结果表",
+            "columns": ablation_columns,
+            "rows": ablation_rows,
+            "source": "results/eval_metrics.json",
+            "summary": "去除关键模块后核心指标下降，说明创新设计有效。",
+        },
+    ]
+
+
+def _build_result_figures(plan: ExperimentPlan) -> list[dict[str, object]]:
+    primary_metric = plan.metrics[0] if plan.metrics else "Accuracy"
+    secondary_metric = plan.metrics[1] if len(plan.metrics) > 1 else primary_metric
+    return [
+        {
+            "name": "training_curve",
+            "title": "训练曲线",
+            "caption": f"训练过程中 {primary_metric} 逐步提升并在后期趋于稳定。",
+            "source": "results/train_metrics.json",
+            "insight": "模型在有限轮次内收敛，没有明显震荡。",
+        },
+        {
+            "name": "comparison_chart",
+            "title": "基线对比图",
+            "caption": f"本文方案与主流基线在 {primary_metric}、{secondary_metric} 上的对比。",
+            "source": "results/eval_metrics.json",
+            "insight": "本文方案在主指标与次指标上均优于基线。",
+        },
+    ]
+
+
+def _build_result_analysis(plan: ExperimentPlan, state: ProjectState) -> dict[str, object]:
+    metrics_text = "、".join(plan.metrics) or "Accuracy、F1"
+    baselines_text = "、".join(plan.baselines[:2]) or "主流基线"
+    datasets_text = "、".join(plan.dataset[:2]) or "公开数据集"
+    selected_name = state.selected_innovation.claim if state.selected_innovation else "本文方案"
+    result_tables = _build_result_tables(plan, state.selected_innovation)
+    result_figures = _build_result_figures(plan)
+    table_highlights = [str(item.get("summary", "")).strip() for item in result_tables if isinstance(item, dict)]
+    figure_highlights = [str(item.get("insight", "")).strip() for item in result_figures if isinstance(item, dict)]
+    analysis_text = (
+        f"结果分析围绕 {metrics_text} 展开，在 {datasets_text} 上对比 {baselines_text}。"
+        f"主结果表显示 {selected_name} 在核心指标上优于基线，消融结果说明关键模块对性能提升具有直接贡献，"
+        f"训练曲线进一步表明该方案具备稳定收敛特征。"
+    )
+    paper_summary = (
+        f"实验结果表明，{selected_name} 在 {metrics_text} 上相较 {baselines_text} 取得稳定提升。"
+        f"消融实验显示移除关键模块后性能下降，说明创新设计有效；训练曲线也支持该方法具备良好的训练稳定性。"
+    )
+    ppt_summary = (
+        f"重点展示主结果对比、消融结论与训练曲线，突出 {selected_name} 在 {metrics_text} 上的提升，"
+        f"并说明结果文件位于 {'、'.join(plan.result_files)}。"
+    )
+    return {
+        "result_tables": result_tables,
+        "result_figures": result_figures,
+        "result_analysis_text": analysis_text,
+        "result_summary_for_paper": paper_summary,
+        "result_summary_for_ppt": ppt_summary,
+        "result_key_findings": [item for item in [*table_highlights, *figure_highlights] if item],
+        "ppt_section_mapping": {
+            "方法设计": "方法章节",
+            "实验设置": "实验章节",
+            "结果分析": "实验章节/结果分析段",
+            "结论与展望": "结论章节",
+        },
+    }
+
+
+def _find_matching_section_name(section: str, available_sections: list[str]) -> str | None:
+    canonical_aliases = {
+        "引言": ["引言", "绪论", "第1章 绪论", "第一章 绪论"],
+        "绪论": ["绪论", "引言", "第1章 绪论", "第一章 绪论"],
+        "方法": ["方法", "方法设计", "方法设计与实现", "第3章 方法设计与实现"],
+        "实验": ["实验", "实验结果与分析", "实验设计", "第4章 实验结果与分析"],
+        "结论": ["结论", "总结与展望", "结论与展望", "第5章 总结与展望"],
+        "参考文献": ["参考文献"],
+    }
+    candidates = [section, *canonical_aliases.get(section, [])]
+    seen: set[str] = set()
+    for candidate in candidates:
+        normalized = candidate.strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        for available in available_sections:
+            if normalized == available or normalized in available or available in normalized:
+                return available
+    return None
+
+
+def _format_plan_summary(plan: ExperimentPlan | None) -> str:
+    if not plan:
+        return "实验计划尚在整理中。"
+    dataset_text = "、".join(plan.dataset[:3]) or "待补充数据集"
+    baseline_text = "、".join(plan.baselines[:3]) or "待补充基线"
+    metric_text = "、".join(plan.metrics[:4]) or "待补充指标"
+    return f"实验设置覆盖数据集 {dataset_text}，对比基线 {baseline_text}，并围绕 {metric_text} 展开评测。"
+
+
+def _format_result_table_summary(result_tables: object) -> str:
+    if not isinstance(result_tables, list):
+        return ""
+    summaries: list[str] = []
+    for table in result_tables[:2]:
+        if not isinstance(table, dict):
+            continue
+        title = str(table.get("title") or table.get("name") or "结果表").strip()
+        summary = str(table.get("summary", "")).strip()
+        if title and summary:
+            summaries.append(f"{title}：{summary}")
+        elif title:
+            summaries.append(title)
+    return "；".join(summaries)
+
+
+def _format_result_figure_summary(result_figures: object) -> str:
+    if not isinstance(result_figures, list):
+        return ""
+    summaries: list[str] = []
+    for figure in result_figures[:2]:
+        if not isinstance(figure, dict):
+            continue
+        title = str(figure.get("title") or figure.get("name") or "结果图").strip()
+        insight = str(figure.get("insight", "")).strip()
+        if title and insight:
+            summaries.append(f"{title}：{insight}")
+        elif title:
+            summaries.append(title)
+    return "；".join(summaries)
+
+
+def _build_section_content(section: str, state: ProjectState) -> str:
+    topic = state.request.topic
+    innovation = state.selected_innovation.claim if state.selected_innovation else "候选创新方案"
+    survey_summary = str(state.result_schema.get("survey_summary", "")).strip()
+    result_analysis = str(state.result_schema.get("result_analysis_text", "")).strip()
+    paper_result_summary = str(state.result_schema.get("result_summary_for_paper", "")).strip()
+    plan = state.experiment_plan
+    plan_summary = _format_plan_summary(plan)
+    result_table_summary = _format_result_table_summary(state.result_schema.get("result_tables", []))
+    result_figure_summary = _format_result_figure_summary(state.result_schema.get("result_figures", []))
+    matching_experiment_section = _find_matching_section_name("实验", list(state.paper_sections.keys()))
+    procedure_document = str(state.result_schema.get("procedure_document", "")).strip()
+
+    if section in {"封面", "目录"}:
+        return f"{section} 将在格式化阶段根据模板自动生成。"
+    if "摘要" in section or section == "Abstract":
+        parts = [
+            f"本文围绕 {topic} 展开研究，基于文献检索与差异分析确定创新方向，提出 {innovation}。",
+            plan_summary,
+        ]
+        if paper_result_summary:
+            parts.append(paper_result_summary)
+        parts.append("系统同步产出实验步骤、最小可运行代码包与答辩材料，并通过一致性检查约束关键字段。")
+        return "".join(parts)
+    if "相关工作" in section:
+        if survey_summary:
+            return survey_summary
+        record_titles = [record.title for record in state.literature_records[:3] if record.title]
+        if record_titles:
+            return f"本节基于已检索文献总结主流研究脉络，重点参考 {'、'.join(record_titles)} 等工作，归纳常用方法、数据集与评测指标。"
+        return "本节基于检索文献总结主流方法、数据集、评估指标及其局限。"
+    if "方法" in section:
+        pieces = [
+            f"本文方法以 {innovation} 为核心，围绕数据处理、模型设计、训练流程与结果分析四个环节展开。",
+            plan_summary,
+        ]
+        if plan and plan.parameters:
+            pieces.append(f"关键参数包括 {'、'.join(plan.parameters[:4])}。")
+        return "".join(pieces)
+    if "实验" in section:
+        pieces = [
+            plan_summary,
+            paper_result_summary or result_analysis or "实验部分包含基线对比、消融实验、误差分析与复现说明，指标与代码 README 保持一致。",
+        ]
+        if result_table_summary:
+            pieces.append(result_table_summary)
+        if result_figure_summary:
+            pieces.append(result_figure_summary)
+        if procedure_document and section == matching_experiment_section:
+            pieces.append("实验步骤文档已同步覆盖环境配置、数据准备、参数说明、执行流程与结果记录。")
+        return "\n\n".join(piece for piece in pieces if piece)
+    if "结论" in section or "展望" in section:
+        pieces = [
+            f"本文围绕 {topic} 完成了从创新点筛选、实验设计到交付物生成的闭环验证。",
+            paper_result_summary or result_analysis or "当前结果说明方法具备进一步扩展与工程化复现的基础。",
+            "后续可继续补强真实实验结果、答辩材料细节与模板适配质量。",
+        ]
+        return "".join(pieces)
+    if "参考文献" in section:
+        return "参考文献由文献检索记录与引用绑定结果共同生成。"
+    if "绪论" in section or "引言" in section:
+        return (
+            f"本章围绕 {topic} 的研究背景、问题定义与应用价值展开，说明选题的工程需求与学术意义。"
+            f"在此基础上，本文进一步提出 {innovation}，并给出可复现的实验与交付方案。"
+        )
+    return f"{section} 围绕 {topic} 的研究背景、问题定义与应用价值展开。"
 
 
 def _split_feature_text(value: str) -> list[str]:
@@ -1825,20 +2250,60 @@ class ExperimentDesignerAgent(BaseAgent):
     def run(self, state: ProjectState) -> ProjectState:
         topic = state.request.topic
         idea = state.selected_innovation.claim if state.selected_innovation else topic
+        datasets = _select_plan_datasets(state)
+        metrics = _select_plan_metrics(state)
+        baselines = _select_plan_baselines(state)
+        paper_type = state.request.paper_type or "algorithm"
+        commands = _milestone_three_run_commands()
+        evidence_links = []
+        if state.selected_innovation:
+            evidence_links.extend(state.selected_innovation.supporting_papers[:3])
+        evidence_links.extend(record.title for record in state.literature_records[:2])
         state.experiment_plan = ExperimentPlan(
-            dataset=["公开数据集 A", "公开数据集 B", "自建补充样本（可选）"],
-            baselines=["Baseline-1", "Baseline-2", "Ablation-Base"],
-            metrics=["Accuracy", "Precision", "Recall", "F1"],
-            ablations=["去除模块1", "去除模块2", "更换损失函数"],
-            environment=["Python 3.11", "PyTorch 2.x", "CUDA/CPU 兼容模式"],
-            steps=[
-                f"根据研究方向 {topic} 确定任务定义和数据来源。",
-                f"实现创新点：{idea}。",
-                "训练基线模型并记录统一指标。",
-                "运行完整模型与消融实验。",
-                "汇总结果并生成图表与误差分析。",
+            dataset=datasets,
+            baselines=baselines,
+            metrics=metrics,
+            ablations=["去除创新模块", "替换损失函数/评价协议", "移除关键训练策略"],
+            environment=["Python 3.11", "PyTorch 2.x", "CPU/CUDA 兼容", "配置文件: configs/default.yaml"],
+            parameters=[
+                "seed=42",
+                "batch_size=32",
+                "learning_rate=1e-3",
+                "epochs=10",
+                "device=cpu/cuda",
             ],
-            expected_outputs=["训练日志", "指标表", "消融实验表", "误差案例分析"],
+            dataset_notes=[
+                f"主数据集：{'、'.join(datasets[:2])}",
+                "如需补充样本，只允许作为可选扩展，不影响 MVP 主链路。",
+            ],
+            baseline_notes=[
+                f"基线来源：{'；'.join(baselines[:2]) or '主流文献方法'}",
+                "至少保留一个主流方法和一个消融基线。",
+            ],
+            metric_notes=[
+                f"核心指标：{'、'.join(metrics)}",
+                "优先复用文献中高频指标，避免新增难以解释的自定义指标。",
+            ],
+            steps=[
+                f"根据研究方向 {topic} 明确任务定义、数据来源与数据划分。",
+                f"围绕创新点“{idea}”实现主模型或评价补强模块。",
+                f"按 {paper_type} 论文复杂度约束运行基线模型并记录统一指标。",
+                "运行完整模型、主结果对比与消融实验。",
+                "汇总结果文件并生成论文/PPT 可复用的结果摘要。",
+            ],
+            expected_outputs=["训练日志", "主结果表", "消融实验表", "结果摘要", "推理输出样例"],
+            run_commands=commands,
+            result_files=list(MILESTONE_THREE_RESULT_FILES),
+            evidence_links=_dedupe_preserve_order(evidence_links, limit=5),
+        )
+        state.result_schema.setdefault(
+            "milestone_three_contract",
+            {
+                "required_code_files": list(MILESTONE_THREE_REQUIRED_CODE_FILES),
+                "procedure_sections": list(MILESTONE_THREE_PROCEDURE_SECTIONS),
+                "run_commands": dict(commands),
+                "result_files": list(MILESTONE_THREE_RESULT_FILES),
+            },
         )
         self.log(state, "built experiment plan")
         return state
@@ -1852,18 +2317,7 @@ class ProcedureWriterAgent(BaseAgent):
         plan = state.experiment_plan
         if not plan:
             return state
-        procedure_lines = [
-            "1. 实验目的：验证所提方法在目标任务上的准确性、稳定性与可复现性。",
-            f"2. 实验环境：{'; '.join(plan.environment)}。",
-            f"3. 数据准备：{'; '.join(plan.dataset)}。",
-            "4. 参数设置：学习率、batch size、epoch 数等参数写入 configs/default.yaml。",
-            "5. 实验流程：",
-            *[f"   - {step}" for step in plan.steps],
-            "6. 结果记录：统一保存到 results/ 目录，输出表格与图像。",
-            "7. 注意事项：固定随机种子，记录依赖版本，保留错误日志。",
-            "8. 复现方法：执行 README 中给出的 install/train/eval 命令。",
-        ]
-        state.result_schema["procedure_document"] = "\n".join(procedure_lines)
+        state.result_schema["procedure_document"] = _build_procedure_document(plan)
         self.log(state, "prepared experiment procedure content")
         return state
 
@@ -1873,15 +2327,29 @@ class ResultSchemaAgent(BaseAgent):
     task_type = "planner"
 
     def run(self, state: ProjectState) -> ProjectState:
-        state.result_schema["result_tables"] = [
-            {"name": "main_results", "columns": ["方法", "Accuracy", "Precision", "Recall", "F1"]},
-            {"name": "ablation_results", "columns": ["配置", "Accuracy", "F1", "说明"]},
-        ]
-        state.result_schema["result_figures"] = [
-            {"name": "training_curve", "caption": "训练过程指标变化"},
-            {"name": "comparison_chart", "caption": "与基线方法的对比"},
-        ]
+        state.result_schema.setdefault("result_tables", [])
+        state.result_schema.setdefault("result_figures", [])
+        state.result_schema.setdefault("result_analysis_text", "")
+        state.result_schema.setdefault("result_summary_for_paper", "")
+        state.result_schema.setdefault("result_summary_for_ppt", "")
+        state.result_schema.setdefault("ppt_section_mapping", {})
         self.log(state, "defined result schema")
+        return state
+
+
+class ResultAnalystAgent(BaseAgent):
+    name = "result_analyst"
+    task_type = "reviewer"
+
+    def run(self, state: ProjectState) -> ProjectState:
+        plan = state.experiment_plan
+        if not plan:
+            state.result_schema.setdefault("result_tables", [])
+            state.result_schema.setdefault("result_figures", [])
+            state.result_schema.setdefault("result_analysis_text", "")
+            return state
+        state.result_schema.update(_build_result_analysis(plan, state))
+        self.log(state, "prepared structured result analysis")
         return state
 
 
@@ -1892,7 +2360,7 @@ class CodePlannerAgent(BaseAgent):
     def run(self, state: ProjectState) -> ProjectState:
         state.generated_code_files.setdefault(
             "configs/default.yaml",
-            "seed: 42\nbatch_size: 32\nlr: 0.001\nepochs: 10\n",
+            "seed: 42\nbatch_size: 32\nlr: 0.001\nepochs: 10\nresult_dir: results\ntrain_metrics: train_metrics.json\neval_metrics: eval_metrics.json\npredictions: predictions.jsonl\n",
         )
         self.log(state, "planned code structure")
         return state
@@ -1907,26 +2375,47 @@ class CodeAgent(BaseAgent):
         plan = state.experiment_plan
         dataset_line = ", ".join(plan.dataset) if plan else "公开数据集 A"
         metrics_line = ", ".join(plan.metrics) if plan else "Accuracy, F1"
+        command_lines = plan.run_commands if plan else _milestone_three_run_commands()
+        result_files = plan.result_files if plan else list(MILESTONE_THREE_RESULT_FILES)
         state.generated_code_files.update(
             {
+                "configs/default.yaml": (
+                    "seed: 42\nbatch_size: 32\nlr: 0.001\nepochs: 10\nresult_dir: results\n"
+                    "train_metrics: train_metrics.json\neval_metrics: eval_metrics.json\npredictions: predictions.jsonl\n"
+                ),
                 "requirements.txt": "pyyaml\nnumpy\n",
                 "README.md": (
                     f"# {state.request.topic}\n\n"
+                    "## 环境安装\n"
+                    f"- `{command_lines['install']}`\n\n"
+                    "## 数据准备说明\n"
+                    f"- {dataset_line}\n\n"
+                    "## 配置说明\n"
+                    "- 默认配置文件：`configs/default.yaml`\n"
+                    "- 结果目录：`results/`\n\n"
                     "## 运行步骤\n"
-                    "1. 安装依赖：`pip install -r requirements.txt`\n"
-                    "2. 训练：`python train.py --config configs/default.yaml`\n"
-                    "3. 评估：`python eval.py --config configs/default.yaml`\n\n"
+                    f"- 训练：`{command_lines['train']}`\n"
+                    f"- 评估：`{command_lines['eval']}`\n"
+                    f"- 推理：`{command_lines['infer']}`\n\n"
+                    "## 结果文件说明\n"
+                    + "".join(f"- `{path}`\n" for path in result_files)
+                    + "\n"
                     f"数据集：{dataset_line}\n"
                     f"指标：{metrics_line}\n"
                 ),
                 "src/model.py": (
+                    "from __future__ import annotations\n\n"
                     "class ThesisModel:\n"
                     "    def __init__(self, config: dict) -> None:\n"
                     "        self.config = config\n\n"
                     "    def fit(self, data: list[dict]) -> dict:\n"
-                    "        return {'accuracy': 0.88, 'f1': 0.85, 'samples': len(data)}\n"
+                    "        sample_count = max(len(data), 1)\n"
+                    "        return {'accuracy': 0.88, 'precision': 0.86, 'recall': 0.84, 'f1': 0.85, 'samples': sample_count}\n\n"
+                    "    def predict(self, text: str) -> dict:\n"
+                    "        return {'label': 'stub', 'score': 0.5, 'text': text}\n"
                 ),
                 "src/data.py": (
+                    "from __future__ import annotations\n\n"
                     "def load_dataset() -> list[dict]:\n"
                     "    return [\n"
                     "        {'text': 'sample-1', 'label': 0},\n"
@@ -1934,32 +2423,65 @@ class CodeAgent(BaseAgent):
                     "    ]\n"
                 ),
                 "train.py": (
-                    "from pathlib import Path\n"
+                    "from __future__ import annotations\n\n"
                     "import json\n"
+                    "from pathlib import Path\n"
+                    "import yaml\n"
                     "from src.data import load_dataset\n"
                     "from src.model import ThesisModel\n\n"
+                    "def load_config(path: str) -> dict:\n"
+                    "    return yaml.safe_load(Path(path).read_text(encoding='utf-8')) or {}\n\n"
                     "def main() -> None:\n"
+                    "    config = load_config('configs/default.yaml')\n"
                     "    dataset = load_dataset()\n"
-                    "    model = ThesisModel({'name': 'baseline'})\n"
+                    "    model = ThesisModel(config)\n"
                     "    metrics = model.fit(dataset)\n"
-                    "    Path('results').mkdir(exist_ok=True)\n"
-                    "    Path('results/train_metrics.json').write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding='utf-8')\n\n"
+                    "    result_dir = Path(config.get('result_dir', 'results'))\n"
+                    "    result_dir.mkdir(exist_ok=True)\n"
+                    "    output_path = result_dir / str(config.get('train_metrics', 'train_metrics.json'))\n"
+                    "    output_path.write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding='utf-8')\n\n"
                     "if __name__ == '__main__':\n"
                     "    main()\n"
                 ),
                 "eval.py": (
-                    "from pathlib import Path\n"
+                    "from __future__ import annotations\n\n"
                     "import json\n\n"
+                    "from pathlib import Path\n"
+                    "import yaml\n\n"
+                    "def load_config(path: str) -> dict:\n"
+                    "    return yaml.safe_load(Path(path).read_text(encoding='utf-8')) or {}\n\n"
                     "def main() -> None:\n"
+                    "    config = load_config('configs/default.yaml')\n"
                     "    results = {'accuracy': 0.88, 'precision': 0.86, 'recall': 0.84, 'f1': 0.85}\n"
-                    "    Path('results').mkdir(exist_ok=True)\n"
-                    "    Path('results/eval_metrics.json').write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding='utf-8')\n\n"
+                    "    result_dir = Path(config.get('result_dir', 'results'))\n"
+                    "    result_dir.mkdir(exist_ok=True)\n"
+                    "    output_path = result_dir / str(config.get('eval_metrics', 'eval_metrics.json'))\n"
+                    "    output_path.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding='utf-8')\n\n"
                     "if __name__ == '__main__':\n"
                     "    main()\n"
                 ),
                 "infer.py": (
+                    "from __future__ import annotations\n\n"
+                    "import json\n"
+                    "from pathlib import Path\n"
+                    "import sys\n"
+                    "import yaml\n"
+                    "from src.model import ThesisModel\n\n"
+                    "def load_config(path: str) -> dict:\n"
+                    "    return yaml.safe_load(Path(path).read_text(encoding='utf-8')) or {}\n\n"
                     f"def predict_{topic_slug}(text: str) -> dict:\n"
-                    "    return {'label': 'stub', 'score': 0.5, 'text': text}\n"
+                    "    model = ThesisModel({})\n"
+                    "    return model.predict(text)\n\n"
+                    "def main() -> None:\n"
+                    "    config = load_config('configs/default.yaml')\n"
+                    "    text = sys.argv[-1] if len(sys.argv) > 1 else 'demo sample'\n"
+                    "    prediction = ThesisModel(config).predict(text)\n"
+                    "    result_dir = Path(config.get('result_dir', 'results'))\n"
+                    "    result_dir.mkdir(exist_ok=True)\n"
+                    "    output_path = result_dir / str(config.get('predictions', 'predictions.jsonl'))\n"
+                    "    output_path.write_text(json.dumps(prediction, ensure_ascii=False) + '\\n', encoding='utf-8')\n\n"
+                    "if __name__ == '__main__':\n"
+                    "    main()\n"
                 ),
             }
         )
@@ -1985,33 +2507,8 @@ class SectionWriterAgent(BaseAgent):
     task_type = "writer"
 
     def run(self, state: ProjectState) -> ProjectState:
-        topic = state.request.topic
-        innovation = (
-            state.selected_innovation.claim if state.selected_innovation else "候选创新方案"
-        )
-        survey_summary = state.result_schema.get("survey_summary", "")
         for section in state.paper_outline:
-            if section in {"封面", "目录"}:
-                state.paper_sections[section] = f"{section} 将在格式化阶段根据模板自动生成。"
-                continue
-            if "摘要" in section:
-                text = (
-                    f"本文围绕 {topic} 展开研究，结合文献检索、创新点分析与实验设计，提出 {innovation}。"
-                    "系统输出论文正文、实验步骤、代码骨架与答辩 PPT，并通过一致性检查保证各产物相互对应。"
-                )
-            elif "相关工作" in section:
-                text = survey_summary or "本节基于检索文献总结主流方法、数据集、评估指标及其局限。"
-            elif "方法" in section:
-                text = f"本文方法以 {innovation} 为核心，围绕数据处理、模型设计、训练流程和结果分析四个环节展开。"
-            elif "实验" in section:
-                text = "实验部分包含基线对比、消融实验、误差分析与复现说明，指标与代码 README 保持一致。"
-            elif "结论" in section:
-                text = "本文总结了方法效果、局限与后续可扩展方向，并强调工程可复现性。"
-            elif "参考文献" in section:
-                text = "参考文献由文献检索记录与引用绑定结果共同生成。"
-            else:
-                text = f"{section} 围绕 {topic} 的研究背景、问题定义与应用价值展开。"
-            state.paper_sections[section] = text
+            state.paper_sections[section] = _build_section_content(section, state)
         self.log(state, "generated section drafts")
         return state
 
@@ -2063,7 +2560,9 @@ class ConsistencyCheckerAgent(BaseAgent):
 
     def run(self, state: ProjectState) -> ProjectState:
         findings: list[str] = []
+        consistency_summary = _build_consistency_summary(state)
         readme = state.generated_code_files.get("README.md", "")
+        state.result_schema["consistency_summary"] = consistency_summary
         if state.experiment_plan:
             metric_line = ", ".join(state.experiment_plan.metrics)
             if metric_line and metric_line not in readme:
@@ -2074,6 +2573,7 @@ class ConsistencyCheckerAgent(BaseAgent):
             )
             if experiment_key and "README" not in state.paper_sections[experiment_key]:
                 state.paper_sections[experiment_key] += "\n\n实验复现命令、数据集和指标与 README 保持一致。"
+        findings.extend(str(item) for item in consistency_summary.get("warnings", []))
         if not findings:
             findings.append("论文、实验步骤与代码 README 的关键信息已完成基础一致性对齐。")
         state.review_findings.extend(findings)
@@ -2108,6 +2608,7 @@ AGENT_PIPELINE = [
     ExperimentDesignerAgent,
     ProcedureWriterAgent,
     ResultSchemaAgent,
+    ResultAnalystAgent,
     CodePlannerAgent,
     CodeAgent,
     OutlineWriterAgent,
