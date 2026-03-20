@@ -17,6 +17,7 @@ export interface ProjectCreate {
   need_code: boolean;
   need_ppt: boolean;
   school_requirements: string;
+  delivery_mode: "draft" | "final";
 }
 
 export interface TemplateSource {

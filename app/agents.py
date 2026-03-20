@@ -53,6 +53,10 @@ MILESTONE_THREE_RESULT_FILES = [
 ]
 
 
+def _is_draft_mode(state: ProjectState) -> bool:
+    return getattr(state.request, "delivery_mode", "draft") != "final"
+
+
 def _select_plan_datasets(state: ProjectState) -> list[str]:
     candidate = state.selected_innovation
     records = state.literature_records or []
@@ -114,20 +118,37 @@ def _build_procedure_document(plan: ExperimentPlan) -> str:
     steps = [f"- {step}" for step in plan.steps]
     parameter_lines = [f"- {item}" for item in plan.parameters]
     dataset_notes = [f"- {item}" for item in plan.dataset_notes]
+    baseline_notes = [f"- {item}" for item in plan.baseline_notes]
+    metric_notes = [f"- {item}" for item in plan.metric_notes]
     note_lines = [
         "- 固定随机种子并记录依赖版本。",
         "- 训练、评估、推理均使用 configs/default.yaml。",
         "- README 中命令必须与脚本入口保持一致。",
+        "- 若使用真实数据，请先修改 configs/default.yaml 中的 dataset_path、text_key、label_key。",
+        "- 若尚未准备真实数据，可先运行一次训练命令生成 demo 数据，用于检查代码链路是否畅通。",
+    ]
+    execution_lines = [
+        *steps,
+        "- 打开 configs/default.yaml，确认 dataset_path、train_split、epochs、max_features 等配置。",
+        "- 按 install → train → eval → infer 顺序执行脚本，并检查 results/ 目录下的输出文件。",
+        "- 将主结果、消融实验和误差分析整理到论文实验结果章节的待填写位置。",
+        *commands,
+    ]
+    result_record_template = [
+        "- results/train_metrics.json：记录训练集样本数、词表规模、训练轮数与训练指标。",
+        "- results/eval_metrics.json：记录验证/测试集 Accuracy、Precision、Recall、F1 等评估指标。",
+        "- results/predictions.jsonl：保存推理样例、预测标签、置信度与原始文本。",
+        "- 建议额外整理 1 份主结果表和 1 份消融实验表，后续手工回填到论文与 PPT。",
     ]
     blocks = [
         f"1. {MILESTONE_THREE_PROCEDURE_SECTIONS[0]}\n- 验证方法在目标任务上的有效性、稳定性与可复现性。",
         f"2. {MILESTONE_THREE_PROCEDURE_SECTIONS[1]}\n" + "\n".join(f"- {item}" for item in plan.environment),
-        f"3. {MILESTONE_THREE_PROCEDURE_SECTIONS[2]}\n" + "\n".join(dataset_notes or [f"- {item}" for item in plan.dataset]),
-        f"4. {MILESTONE_THREE_PROCEDURE_SECTIONS[3]}\n" + "\n".join(parameter_lines or ["- 关键参数写入 configs/default.yaml。"]),
-        f"5. {MILESTONE_THREE_PROCEDURE_SECTIONS[4]}\n" + "\n".join(steps + commands),
-        f"6. {MILESTONE_THREE_PROCEDURE_SECTIONS[5]}\n" + "\n".join(result_files or ["- results/ 目录记录主要输出文件。"]),
+        f"3. {MILESTONE_THREE_PROCEDURE_SECTIONS[2]}\n" + "\n".join(dataset_notes or [f"- {item}" for item in plan.dataset]) + "\n- 数据文件建议采用 JSONL 或 CSV 格式，并至少包含 text / label 两列。",
+        f"4. {MILESTONE_THREE_PROCEDURE_SECTIONS[3]}\n" + "\n".join(parameter_lines + metric_notes + baseline_notes or ["- 关键参数写入 configs/default.yaml。"]),
+        f"5. {MILESTONE_THREE_PROCEDURE_SECTIONS[4]}\n" + "\n".join(execution_lines),
+        f"6. {MILESTONE_THREE_PROCEDURE_SECTIONS[5]}\n" + "\n".join(result_files + result_record_template or ["- results/ 目录记录主要输出文件。"]),
         f"7. {MILESTONE_THREE_PROCEDURE_SECTIONS[6]}\n" + "\n".join(note_lines),
-        f"8. {MILESTONE_THREE_PROCEDURE_SECTIONS[7]}\n" + "\n".join(commands),
+        f"8. {MILESTONE_THREE_PROCEDURE_SECTIONS[7]}\n" + "\n".join(commands + ["- 完成实验后，将结果文件中的指标整理成论文主结果表、消融表和答辩 PPT 结果页。"]),
     ]
     return "\n\n".join(blocks)
 
@@ -285,6 +306,45 @@ def _build_result_figures(plan: ExperimentPlan) -> list[dict[str, object]]:
 
 
 def _build_result_analysis(plan: ExperimentPlan, state: ProjectState) -> dict[str, object]:
+    if _is_draft_mode(state):
+        return {
+            "result_tables": [
+                {
+                    "name": "result_record_template",
+                    "title": "实验结果记录模板",
+                    "columns": ["实验项", "待填写结果", "说明"],
+                    "rows": [
+                        {"实验项": "主结果对比", "待填写结果": "待实验后填写", "说明": "填写各 baseline 与本文方案的核心指标。"},
+                        {"实验项": "消融实验", "待填写结果": "待实验后填写", "说明": "记录移除关键模块后的指标变化。"},
+                        {"实验项": "误差分析", "待填写结果": "待实验后填写", "说明": "补充失败案例、鲁棒性或边界样本现象。"},
+                    ],
+                    "source": "manual_fill",
+                    "summary": "当前为初稿模式，结果表由用户完成实验后回填。",
+                }
+            ],
+            "result_figures": [
+                {
+                    "name": "figure_record_template",
+                    "title": "实验图表规划",
+                    "caption": "建议在完成实验后补充训练曲线、主结果对比图和必要的误差分析图。",
+                    "source": "manual_fill",
+                    "insight": "当前仅输出图表规划与回填说明，不生成虚拟图表结论。",
+                }
+            ],
+            "result_analysis_text": "当前处于初稿模式，论文仅保留实验设计、实施流程与结果记录模板。真实结果、图表与定量结论需由用户完成实验后回填。",
+            "result_summary_for_paper": "实验结果部分暂以结果记录模板占位，待完成主结果对比、消融实验和误差分析后再补入正式论文。",
+            "result_summary_for_ppt": "答辩材料当前只展示实验设置与结果回填说明，真实结果页需在实验完成后更新。",
+            "result_key_findings": [
+                "当前为初稿模式，暂不输出未经验证的性能结论。",
+                "实验完成后需补填主结果、消融结果、图表与误差分析。",
+            ],
+            "ppt_section_mapping": {
+                "方法设计": "方法章节",
+                "实验设置": "实验章节",
+                "结果分析": "实验章节/结果回填段",
+                "结论与展望": "结论章节",
+            },
+        }
     metrics_text = "、".join(plan.metrics) or "Accuracy、F1"
     baselines_text = "、".join(plan.baselines[:2]) or "主流基线"
     datasets_text = "、".join(plan.dataset[:2]) or "公开数据集"
@@ -388,6 +448,7 @@ def _format_result_figure_summary(result_figures: object) -> str:
 def _build_section_content(section: str, state: ProjectState) -> str:
     topic = state.request.topic
     innovation = state.selected_innovation.claim if state.selected_innovation else "候选创新方案"
+    draft_mode = _is_draft_mode(state)
     survey_summary = str(state.result_schema.get("survey_summary", "")).strip()
     result_analysis = str(state.result_schema.get("result_analysis_text", "")).strip()
     paper_result_summary = str(state.result_schema.get("result_summary_for_paper", "")).strip()
@@ -405,9 +466,12 @@ def _build_section_content(section: str, state: ProjectState) -> str:
             f"本文围绕 {topic} 展开研究，基于文献检索与差异分析确定创新方向，提出 {innovation}。",
             plan_summary,
         ]
-        if paper_result_summary:
+        if paper_result_summary and not draft_mode:
             parts.append(paper_result_summary)
-        parts.append("系统同步产出实验步骤、最小可运行代码包与答辩材料，并通过一致性检查约束关键字段。")
+        if draft_mode:
+            parts.append("本文当前输出为初稿版本，重点交付实验设计、实验步骤与可运行代码包，真实实验结果将在完成本地实验后补充。")
+        else:
+            parts.append("系统同步产出实验步骤、最小可运行代码包与答辩材料，并通过一致性检查约束关键字段。")
         return "".join(parts)
     if "相关工作" in section:
         if survey_summary:
@@ -427,19 +491,29 @@ def _build_section_content(section: str, state: ProjectState) -> str:
     if "实验" in section:
         pieces = [
             plan_summary,
-            paper_result_summary or result_analysis or "实验部分包含基线对比、消融实验、误差分析与复现说明，指标与代码 README 保持一致。",
+            (
+                "本节重点说明实验目标、数据集、基线、评价指标、运行环境、参数设置、执行流程与结果记录方式。真实实验结果、结果表和图表由用户完成实验后补充。"
+                if draft_mode
+                else paper_result_summary or result_analysis or "实验部分包含基线对比、消融实验、误差分析与复现说明，指标与代码 README 保持一致。"
+            ),
         ]
-        if result_table_summary:
+        if result_table_summary and not draft_mode:
             pieces.append(result_table_summary)
-        if result_figure_summary:
+        if result_figure_summary and not draft_mode:
             pieces.append(result_figure_summary)
         if procedure_document and section == matching_experiment_section:
             pieces.append("实验步骤文档已同步覆盖环境配置、数据准备、参数说明、执行流程与结果记录。")
+        if draft_mode and plan and plan.result_files:
+            pieces.append(f"实验完成后请将结果填写至 {'、'.join(plan.result_files)} 对应文件，并据此补全主结果表、消融实验与误差分析。")
         return "\n\n".join(piece for piece in pieces if piece)
     if "结论" in section or "展望" in section:
         pieces = [
             f"本文围绕 {topic} 完成了从创新点筛选、实验设计到交付物生成的闭环验证。",
-            paper_result_summary or result_analysis or "当前结果说明方法具备进一步扩展与工程化复现的基础。",
+            (
+                "当前版本为初稿，已完成方法方案、实验设计、实验步骤与代码交付，后续将在完成本地实验后补充真实结果与定量结论。"
+                if draft_mode
+                else paper_result_summary or result_analysis or "当前结果说明方法具备进一步扩展与工程化复现的基础。"
+            ),
             "后续可继续补强真实实验结果、答辩材料细节与模板适配质量。",
         ]
         return "".join(pieces)
@@ -2360,7 +2434,7 @@ class CodePlannerAgent(BaseAgent):
     def run(self, state: ProjectState) -> ProjectState:
         state.generated_code_files.setdefault(
             "configs/default.yaml",
-            "seed: 42\nbatch_size: 32\nlr: 0.001\nepochs: 10\nresult_dir: results\ntrain_metrics: train_metrics.json\neval_metrics: eval_metrics.json\npredictions: predictions.jsonl\n",
+            "seed: 42\ndataset_path: data/dataset.jsonl\ntext_key: text\nlabel_key: label\ntrain_split: 0.8\nmax_features: 500\nlowercase: true\nbatch_size: 32\nlr: 0.001\nepochs: 10\nresult_dir: results\nmodel_path: model_state.json\ntrain_metrics: train_metrics.json\neval_metrics: eval_metrics.json\npredictions: predictions.jsonl\n",
         )
         self.log(state, "planned code structure")
         return state
@@ -2377,67 +2451,265 @@ class CodeAgent(BaseAgent):
         metrics_line = ", ".join(plan.metrics) if plan else "Accuracy, F1"
         command_lines = plan.run_commands if plan else _milestone_three_run_commands()
         result_files = plan.result_files if plan else list(MILESTONE_THREE_RESULT_FILES)
+        dataset_notes = "\n".join(f"- {item}" for item in (plan.dataset_notes if plan else [])) or "- 请将真实数据写入 data/dataset.jsonl，字段名默认使用 text 和 label。"
+        baseline_notes = "\n".join(f"- {item}" for item in (plan.baseline_notes if plan else [])) or "- 建议至少保留 1 个主流 baseline 作为对照。"
+        metric_notes = "\n".join(f"- {item}" for item in (plan.metric_notes if plan else [])) or "- 请根据任务重点补充 Accuracy、F1 等指标。"
         state.generated_code_files.update(
             {
                 "configs/default.yaml": (
-                    "seed: 42\nbatch_size: 32\nlr: 0.001\nepochs: 10\nresult_dir: results\n"
-                    "train_metrics: train_metrics.json\neval_metrics: eval_metrics.json\npredictions: predictions.jsonl\n"
+                    "seed: 42\n"
+                    "dataset_path: data/dataset.jsonl\n"
+                    "text_key: text\n"
+                    "label_key: label\n"
+                    "train_split: 0.8\n"
+                    "max_features: 500\n"
+                    "lowercase: true\n"
+                    "batch_size: 32\n"
+                    "lr: 0.001\n"
+                    "epochs: 10\n"
+                    "result_dir: results\n"
+                    "model_path: model_state.json\n"
+                    "train_metrics: train_metrics.json\n"
+                    "eval_metrics: eval_metrics.json\n"
+                    "predictions: predictions.jsonl\n"
                 ),
                 "requirements.txt": "pyyaml\nnumpy\n",
                 "README.md": (
                     f"# {state.request.topic}\n\n"
                     "## 环境安装\n"
-                    f"- `{command_lines['install']}`\n\n"
+                    f"- `{command_lines['install']}`\n"
+                    "- 推荐使用 Python 3.10+，并单独创建虚拟环境。\n\n"
                     "## 数据准备说明\n"
-                    f"- {dataset_line}\n\n"
+                    f"- 参考数据集：{dataset_line}\n"
+                    f"{dataset_notes}\n"
+                    "- 默认数据文件为 `data/dataset.jsonl`，每行格式示例：`{\"text\": \"示例文本\", \"label\": 0}`。\n"
+                    "- 也支持 CSV 数据，需至少包含 `text` 和 `label` 两列，并在配置文件中修改 `dataset_path`。\n\n"
                     "## 配置说明\n"
                     "- 默认配置文件：`configs/default.yaml`\n"
-                    "- 结果目录：`results/`\n\n"
+                    "- 关键配置项：`dataset_path`、`text_key`、`label_key`、`train_split`、`max_features`、`epochs`\n"
+                    "- 结果目录：`results/`\n"
+                    "- 模型状态默认保存为 `results/model_state.json`。\n\n"
+                    "## 实验设置建议\n"
+                    f"- Baseline 参考：\n{baseline_notes}\n"
+                    f"- 指标说明：\n{metric_notes}\n\n"
                     "## 运行步骤\n"
+                    "1. 修改 `configs/default.yaml`，确认数据路径、字段名和训练参数。\n"
+                    "2. 若没有真实数据，可先直接运行训练命令，脚本会自动生成一份 demo 数据集用于链路验证。\n"
+                    "3. 再运行评估命令和推理命令，检查 `results/` 目录输出。\n"
                     f"- 训练：`{command_lines['train']}`\n"
                     f"- 评估：`{command_lines['eval']}`\n"
                     f"- 推理：`{command_lines['infer']}`\n\n"
                     "## 结果文件说明\n"
                     + "".join(f"- `{path}`\n" for path in result_files)
                     + "\n"
+                    "## 结果回填建议\n"
+                    "- 将 `results/eval_metrics.json` 中的主指标整理成论文主结果表。\n"
+                    "- 记录不同配置下的评估结果，形成消融实验表。\n"
+                    "- 从 `results/predictions.jsonl` 中挑选典型样例，整理误差分析。\n\n"
                     f"数据集：{dataset_line}\n"
                     f"指标：{metrics_line}\n"
                 ),
+                "data/dataset.jsonl": (
+                    '{"text": "示例文本：模型训练流程验证", "label": 0}\n'
+                    '{"text": "示例文本：毕业论文实验代码生成", "label": 1}\n'
+                    '{"text": "示例文本：中文分类实验", "label": 1}\n'
+                    '{"text": "示例文本：算法评测样例", "label": 0}\n'
+                ),
                 "src/model.py": (
                     "from __future__ import annotations\n\n"
+                    "import json\n"
+                    "import math\n"
+                    "from pathlib import Path\n\n"
+                    "import numpy as np\n\n"
                     "class ThesisModel:\n"
                     "    def __init__(self, config: dict) -> None:\n"
-                    "        self.config = config\n\n"
-                    "    def fit(self, data: list[dict]) -> dict:\n"
-                    "        sample_count = max(len(data), 1)\n"
-                    "        return {'accuracy': 0.88, 'precision': 0.86, 'recall': 0.84, 'f1': 0.85, 'samples': sample_count}\n\n"
+                    "        self.config = config\n"
+                    "        self.vocabulary: dict[str, int] = {}\n"
+                    "        self.class_profiles: dict[str, list[float]] = {}\n"
+                    "        self.labels: list[str] = []\n\n"
+                    "    def _tokenize(self, text: str) -> list[str]:\n"
+                    "        normalized = text.lower() if self.config.get('lowercase', True) else text\n"
+                    "        return [token for token in normalized.replace('\\n', ' ').split(' ') if token.strip()]\n\n"
+                    "    def _build_vocabulary(self, records: list[dict]) -> None:\n"
+                    "        counts: dict[str, int] = {}\n"
+                    "        for record in records:\n"
+                    "            for token in self._tokenize(str(record.get('text', ''))):\n"
+                    "                counts[token] = counts.get(token, 0) + 1\n"
+                    "        max_features = int(self.config.get('max_features', 500))\n"
+                    "        sorted_tokens = sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:max_features]\n"
+                    "        self.vocabulary = {token: idx for idx, (token, _) in enumerate(sorted_tokens)}\n\n"
+                    "    def _vectorize(self, text: str) -> np.ndarray:\n"
+                    "        vector = np.zeros(len(self.vocabulary), dtype=float)\n"
+                    "        for token in self._tokenize(text):\n"
+                    "            index = self.vocabulary.get(token)\n"
+                    "            if index is not None:\n"
+                    "                vector[index] += 1.0\n"
+                    "        norm = np.linalg.norm(vector)\n"
+                    "        return vector / norm if norm else vector\n\n"
+                    "    def fit(self, records: list[dict]) -> dict:\n"
+                    "        if not records:\n"
+                    "            raise ValueError('训练数据为空，无法完成训练。')\n"
+                    "        self._build_vocabulary(records)\n"
+                    "        labels = sorted({str(record.get('label', '0')) for record in records})\n"
+                    "        self.labels = labels\n"
+                    "        grouped: dict[str, list[np.ndarray]] = {label: [] for label in labels}\n"
+                    "        for record in records:\n"
+                    "            grouped[str(record.get('label', '0'))].append(self._vectorize(str(record.get('text', ''))))\n"
+                    "        for label, vectors in grouped.items():\n"
+                    "            if vectors:\n"
+                    "                profile = np.mean(np.stack(vectors), axis=0)\n"
+                    "                norm = np.linalg.norm(profile)\n"
+                    "                self.class_profiles[label] = (profile / norm).tolist() if norm else profile.tolist()\n"
+                    "            else:\n"
+                    "                self.class_profiles[label] = np.zeros(len(self.vocabulary), dtype=float).tolist()\n"
+                    "        train_predictions = [self.predict(str(record.get('text', '')))['label'] for record in records]\n"
+                    "        gold_labels = [str(record.get('label', '0')) for record in records]\n"
+                    "        metrics = self.evaluate(records)\n"
+                    "        metrics.update({\n"
+                    "            'samples': len(records),\n"
+                    "            'vocab_size': len(self.vocabulary),\n"
+                    "            'epochs': int(self.config.get('epochs', 10)),\n"
+                    "            'observed_labels': labels,\n"
+                    "            'predicted_labels': train_predictions[:10],\n"
+                    "            'gold_labels_preview': gold_labels[:10],\n"
+                    "        })\n"
+                    "        return metrics\n\n"
+                    "    def evaluate(self, records: list[dict]) -> dict:\n"
+                    "        if not records:\n"
+                    "            return {'accuracy': 0.0, 'precision': 0.0, 'recall': 0.0, 'f1': 0.0, 'samples': 0}\n"
+                    "        predictions = [self.predict(str(record.get('text', '')))['label'] for record in records]\n"
+                    "        labels = [str(record.get('label', '0')) for record in records]\n"
+                    "        accuracy = sum(int(pred == gold) for pred, gold in zip(predictions, labels)) / len(labels)\n"
+                    "        positive_label = self.labels[-1] if self.labels else (sorted(set(labels))[-1] if labels else '1')\n"
+                    "        true_positive = sum(1 for pred, gold in zip(predictions, labels) if pred == positive_label and gold == positive_label)\n"
+                    "        false_positive = sum(1 for pred, gold in zip(predictions, labels) if pred == positive_label and gold != positive_label)\n"
+                    "        false_negative = sum(1 for pred, gold in zip(predictions, labels) if pred != positive_label and gold == positive_label)\n"
+                    "        precision = true_positive / (true_positive + false_positive) if (true_positive + false_positive) else 0.0\n"
+                    "        recall = true_positive / (true_positive + false_negative) if (true_positive + false_negative) else 0.0\n"
+                    "        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) else 0.0\n"
+                    "        return {\n"
+                    "            'accuracy': round(float(accuracy), 4),\n"
+                    "            'precision': round(float(precision), 4),\n"
+                    "            'recall': round(float(recall), 4),\n"
+                    "            'f1': round(float(f1), 4),\n"
+                    "            'samples': len(records),\n"
+                    "        }\n\n"
                     "    def predict(self, text: str) -> dict:\n"
-                    "        return {'label': 'stub', 'score': 0.5, 'text': text}\n"
+                    "        if not self.class_profiles:\n"
+                    "            return {'label': '0', 'score': 0.0, 'text': text}\n"
+                    "        vector = self._vectorize(text)\n"
+                    "        best_label = None\n"
+                    "        best_score = -math.inf\n"
+                    "        for label, profile in self.class_profiles.items():\n"
+                    "            profile_vector = np.array(profile, dtype=float)\n"
+                    "            score = float(np.dot(vector, profile_vector)) if len(profile_vector) else 0.0\n"
+                    "            if score > best_score:\n"
+                    "                best_score = score\n"
+                    "                best_label = label\n"
+                    "        return {'label': best_label or '0', 'score': round(float(best_score if best_score > -math.inf else 0.0), 4), 'text': text}\n\n"
+                    "    def save(self, path: str | Path) -> None:\n"
+                    "        payload = {\n"
+                    "            'config': self.config,\n"
+                    "            'vocabulary': self.vocabulary,\n"
+                    "            'class_profiles': self.class_profiles,\n"
+                    "            'labels': self.labels,\n"
+                    "        }\n"
+                    "        Path(path).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')\n\n"
+                    "    @classmethod\n"
+                    "    def load(cls, path: str | Path) -> 'ThesisModel':\n"
+                    "        payload = json.loads(Path(path).read_text(encoding='utf-8'))\n"
+                    "        model = cls(dict(payload.get('config', {})))\n"
+                    "        model.vocabulary = {str(key): int(value) for key, value in dict(payload.get('vocabulary', {})).items()}\n"
+                    "        model.class_profiles = {str(key): list(value) for key, value in dict(payload.get('class_profiles', {})).items()}\n"
+                    "        model.labels = [str(item) for item in list(payload.get('labels', []))]\n"
+                    "        return model\n"
                 ),
                 "src/data.py": (
                     "from __future__ import annotations\n\n"
-                    "def load_dataset() -> list[dict]:\n"
-                    "    return [\n"
-                    "        {'text': 'sample-1', 'label': 0},\n"
-                    "        {'text': 'sample-2', 'label': 1},\n"
+                    "import csv\n"
+                    "import json\n"
+                    "import random\n"
+                    "from pathlib import Path\n\n"
+                    "def ensure_dataset(config: dict) -> Path:\n"
+                    "    dataset_path = Path(str(config.get('dataset_path', 'data/dataset.jsonl')))\n"
+                    "    dataset_path.parent.mkdir(parents=True, exist_ok=True)\n"
+                    "    if dataset_path.exists():\n"
+                    "        return dataset_path\n"
+                    "    demo_records = [\n"
+                    "        {'text': '示例文本：模型训练流程验证', 'label': 0},\n"
+                    "        {'text': '示例文本：毕业论文实验代码生成', 'label': 1},\n"
+                    "        {'text': '示例文本：中文分类实验', 'label': 1},\n"
+                    "        {'text': '示例文本：算法评测样例', 'label': 0},\n"
+                    "        {'text': '示例文本：创新点验证', 'label': 1},\n"
+                    "        {'text': '示例文本：实验复现流程', 'label': 0},\n"
                     "    ]\n"
+                    "    if dataset_path.suffix.lower() == '.csv':\n"
+                    "        with dataset_path.open('w', encoding='utf-8-sig', newline='') as handle:\n"
+                    "            writer = csv.DictWriter(handle, fieldnames=['text', 'label'])\n"
+                    "            writer.writeheader()\n"
+                    "            writer.writerows(demo_records)\n"
+                    "    else:\n"
+                    "        with dataset_path.open('w', encoding='utf-8') as handle:\n"
+                    "            for record in demo_records:\n"
+                    "                handle.write(json.dumps(record, ensure_ascii=False) + '\\n')\n"
+                    "    return dataset_path\n\n"
+                    "def load_dataset(config: dict) -> list[dict]:\n"
+                    "    dataset_path = ensure_dataset(config)\n"
+                    "    text_key = str(config.get('text_key', 'text'))\n"
+                    "    label_key = str(config.get('label_key', 'label'))\n"
+                    "    records: list[dict] = []\n"
+                    "    if dataset_path.suffix.lower() == '.csv':\n"
+                    "        with dataset_path.open('r', encoding='utf-8-sig', newline='') as handle:\n"
+                    "            reader = csv.DictReader(handle)\n"
+                    "            for row in reader:\n"
+                    "                records.append({'text': str(row.get(text_key, '')), 'label': str(row.get(label_key, '0'))})\n"
+                    "    else:\n"
+                    "        with dataset_path.open('r', encoding='utf-8') as handle:\n"
+                    "            for line in handle:\n"
+                    "                line = line.strip()\n"
+                    "                if not line:\n"
+                    "                    continue\n"
+                    "                payload = json.loads(line)\n"
+                    "                records.append({'text': str(payload.get(text_key, '')), 'label': str(payload.get(label_key, '0'))})\n"
+                    "    return [record for record in records if record['text']]\n\n"
+                    "def split_dataset(records: list[dict], config: dict) -> tuple[list[dict], list[dict]]:\n"
+                    "    if len(records) < 2:\n"
+                    "        return records, records\n"
+                    "    seed = int(config.get('seed', 42))\n"
+                    "    train_split = float(config.get('train_split', 0.8))\n"
+                    "    rng = random.Random(seed)\n"
+                    "    shuffled = list(records)\n"
+                    "    rng.shuffle(shuffled)\n"
+                    "    split_index = max(1, min(len(shuffled) - 1, int(len(shuffled) * train_split)))\n"
+                    "    return shuffled[:split_index], shuffled[split_index:]\n"
                 ),
                 "train.py": (
                     "from __future__ import annotations\n\n"
+                    "import argparse\n"
                     "import json\n"
                     "from pathlib import Path\n"
                     "import yaml\n"
-                    "from src.data import load_dataset\n"
+                    "from src.data import load_dataset, split_dataset\n"
                     "from src.model import ThesisModel\n\n"
                     "def load_config(path: str) -> dict:\n"
                     "    return yaml.safe_load(Path(path).read_text(encoding='utf-8')) or {}\n\n"
+                    "def parse_args() -> argparse.Namespace:\n"
+                    "    parser = argparse.ArgumentParser(description='Train thesis experiment baseline model.')\n"
+                    "    parser.add_argument('--config', default='configs/default.yaml')\n"
+                    "    return parser.parse_args()\n\n"
                     "def main() -> None:\n"
-                    "    config = load_config('configs/default.yaml')\n"
-                    "    dataset = load_dataset()\n"
+                    "    args = parse_args()\n"
+                    "    config = load_config(args.config)\n"
+                    "    dataset = load_dataset(config)\n"
+                    "    train_records, eval_records = split_dataset(dataset, config)\n"
                     "    model = ThesisModel(config)\n"
-                    "    metrics = model.fit(dataset)\n"
+                    "    metrics = model.fit(train_records)\n"
+                    "    metrics['train_samples'] = len(train_records)\n"
+                    "    metrics['eval_samples_reserved'] = len(eval_records)\n"
                     "    result_dir = Path(config.get('result_dir', 'results'))\n"
-                    "    result_dir.mkdir(exist_ok=True)\n"
+                    "    result_dir.mkdir(parents=True, exist_ok=True)\n"
+                    "    model_path = result_dir / str(config.get('model_path', 'model_state.json'))\n"
+                    "    model.save(model_path)\n"
                     "    output_path = result_dir / str(config.get('train_metrics', 'train_metrics.json'))\n"
                     "    output_path.write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding='utf-8')\n\n"
                     "if __name__ == '__main__':\n"
@@ -2445,16 +2717,29 @@ class CodeAgent(BaseAgent):
                 ),
                 "eval.py": (
                     "from __future__ import annotations\n\n"
+                    "import argparse\n"
                     "import json\n\n"
                     "from pathlib import Path\n"
                     "import yaml\n\n"
+                    "from src.data import load_dataset, split_dataset\n"
+                    "from src.model import ThesisModel\n\n"
                     "def load_config(path: str) -> dict:\n"
                     "    return yaml.safe_load(Path(path).read_text(encoding='utf-8')) or {}\n\n"
+                    "def parse_args() -> argparse.Namespace:\n"
+                    "    parser = argparse.ArgumentParser(description='Evaluate thesis experiment baseline model.')\n"
+                    "    parser.add_argument('--config', default='configs/default.yaml')\n"
+                    "    return parser.parse_args()\n\n"
                     "def main() -> None:\n"
-                    "    config = load_config('configs/default.yaml')\n"
-                    "    results = {'accuracy': 0.88, 'precision': 0.86, 'recall': 0.84, 'f1': 0.85}\n"
+                    "    args = parse_args()\n"
+                    "    config = load_config(args.config)\n"
+                    "    dataset = load_dataset(config)\n"
+                    "    _, eval_records = split_dataset(dataset, config)\n"
                     "    result_dir = Path(config.get('result_dir', 'results'))\n"
-                    "    result_dir.mkdir(exist_ok=True)\n"
+                    "    result_dir.mkdir(parents=True, exist_ok=True)\n"
+                    "    model_path = result_dir / str(config.get('model_path', 'model_state.json'))\n"
+                    "    model = ThesisModel.load(model_path) if model_path.exists() else ThesisModel(config)\n"
+                    "    results = model.evaluate(eval_records)\n"
+                    "    results['model_path'] = str(model_path)\n"
                     "    output_path = result_dir / str(config.get('eval_metrics', 'eval_metrics.json'))\n"
                     "    output_path.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding='utf-8')\n\n"
                     "if __name__ == '__main__':\n"
@@ -2462,22 +2747,30 @@ class CodeAgent(BaseAgent):
                 ),
                 "infer.py": (
                     "from __future__ import annotations\n\n"
+                    "import argparse\n"
                     "import json\n"
                     "from pathlib import Path\n"
-                    "import sys\n"
                     "import yaml\n"
                     "from src.model import ThesisModel\n\n"
                     "def load_config(path: str) -> dict:\n"
                     "    return yaml.safe_load(Path(path).read_text(encoding='utf-8')) or {}\n\n"
+                    "def parse_args() -> argparse.Namespace:\n"
+                    "    parser = argparse.ArgumentParser(description='Run inference for thesis experiment baseline model.')\n"
+                    "    parser.add_argument('--config', default='configs/default.yaml')\n"
+                    "    parser.add_argument('--text', default='demo sample')\n"
+                    "    return parser.parse_args()\n\n"
                     f"def predict_{topic_slug}(text: str) -> dict:\n"
                     "    model = ThesisModel({})\n"
                     "    return model.predict(text)\n\n"
                     "def main() -> None:\n"
-                    "    config = load_config('configs/default.yaml')\n"
-                    "    text = sys.argv[-1] if len(sys.argv) > 1 else 'demo sample'\n"
-                    "    prediction = ThesisModel(config).predict(text)\n"
+                    "    args = parse_args()\n"
+                    "    config = load_config(args.config)\n"
                     "    result_dir = Path(config.get('result_dir', 'results'))\n"
-                    "    result_dir.mkdir(exist_ok=True)\n"
+                    "    result_dir.mkdir(parents=True, exist_ok=True)\n"
+                    "    model_path = result_dir / str(config.get('model_path', 'model_state.json'))\n"
+                    "    model = ThesisModel.load(model_path) if model_path.exists() else ThesisModel(config)\n"
+                    "    prediction = model.predict(args.text)\n"
+                    "    result_dir = Path(config.get('result_dir', 'results'))\n"
                     "    output_path = result_dir / str(config.get('predictions', 'predictions.jsonl'))\n"
                     "    output_path.write_text(json.dumps(prediction, ensure_ascii=False) + '\\n', encoding='utf-8')\n\n"
                     "if __name__ == '__main__':\n"

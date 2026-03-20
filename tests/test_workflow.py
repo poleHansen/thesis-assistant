@@ -8,6 +8,7 @@ import uuid
 
 from app.agents import (
     ConsistencyCheckerAgent,
+    CodePlannerAgent,
     ExperimentDesignerAgent,
     FeasibilityReviewerAgent,
     GapAnalystAgent,
@@ -318,12 +319,42 @@ class WorkflowTest(unittest.TestCase):
             "README.md",
             "requirements.txt",
         ]))
+        self.assertIn("dataset_path", state.generated_code_files["configs/default.yaml"])
+        self.assertIn("建议额外整理 1 份主结果表", procedure)
+        self.assertIn("dataset_path、text_key、label_key", procedure)
+        self.assertIn("data/dataset.jsonl", readme)
+        self.assertIn("results/model_state.json", readme)
+
+    def test_code_agent_generates_executable_mvp_pipeline_files(self) -> None:
+        gateway = ModelGateway(ModelSettingsStore.default_settings())
+        state = ProjectState(
+            project_id="project-code-mvp",
+            request=ProjectCreate(topic="中文文本分类算法"),
+        )
+        state = ExperimentDesignerAgent(gateway).run(state)
+        state = CodePlannerAgent(gateway).run(state)
+        state = CodeAgent(gateway).run(state)
+
+        train_code = state.generated_code_files["train.py"]
+        eval_code = state.generated_code_files["eval.py"]
+        infer_code = state.generated_code_files["infer.py"]
+        model_code = state.generated_code_files["src/model.py"]
+        data_code = state.generated_code_files["src/data.py"]
+
+        self.assertIn("argparse", train_code)
+        self.assertIn("model.save", train_code)
+        self.assertIn("split_dataset", train_code)
+        self.assertIn("ThesisModel.load", eval_code)
+        self.assertIn("--text", infer_code)
+        self.assertIn("class_profiles", model_code)
+        self.assertIn("ensure_dataset", data_code)
+        self.assertIn("data/dataset.jsonl", state.generated_code_files)
 
     def test_result_analyst_populates_structured_result_payload(self) -> None:
         gateway = ModelGateway(ModelSettingsStore.default_settings())
         state = ProjectState(
             project_id="project-result-analyst",
-            request=ProjectCreate(topic="中文文本分类算法"),
+            request=ProjectCreate(topic="中文文本分类算法", delivery_mode="final"),
             selected_innovation=InnovationCandidate(
                 claim="面向中文文本分类的轻量增强方案",
                 supporting_papers=["Paper A"],
@@ -347,6 +378,30 @@ class WorkflowTest(unittest.TestCase):
         first_table = state.result_schema.get("result_tables", [])[0]
         self.assertIn("rows", first_table)
         self.assertIn("summary", first_table)
+
+    def test_result_analyst_uses_fill_in_template_in_draft_mode(self) -> None:
+        gateway = ModelGateway(ModelSettingsStore.default_settings())
+        state = ProjectState(
+            project_id="project-result-analyst-draft",
+            request=ProjectCreate(topic="中文文本分类算法", delivery_mode="draft"),
+            selected_innovation=InnovationCandidate(
+                claim="面向中文文本分类的轻量增强方案",
+                supporting_papers=["Paper A"],
+                contrast_papers=["Paper B"],
+                novelty_reason="有效",
+                feasibility_score=8.0,
+                risk="可控",
+                verification_plan="补充对比实验",
+            ),
+        )
+        state = ExperimentDesignerAgent(gateway).run(state)
+        state = ResultSchemaAgent(gateway).run(state)
+        state = ResultAnalystAgent(gateway).run(state)
+
+        self.assertIn("用户完成实验后回填", str(state.result_schema.get("result_analysis_text", "")))
+        first_table = state.result_schema.get("result_tables", [])[0]
+        self.assertEqual(first_table.get("title"), "实验结果记录模板")
+        self.assertEqual(first_table.get("source"), "manual_fill")
 
     def test_consistency_summary_contains_granular_checks_and_mapping_status(self) -> None:
         gateway = ModelGateway(ModelSettingsStore.default_settings())
@@ -383,7 +438,7 @@ class WorkflowTest(unittest.TestCase):
         gateway = ModelGateway(ModelSettingsStore.default_settings())
         state = ProjectState(
             project_id="project-paper-sections",
-            request=ProjectCreate(topic="道路裂缝检测"),
+            request=ProjectCreate(topic="道路裂缝检测", delivery_mode="final"),
             selected_innovation=InnovationCandidate(
                 claim="基于 YOLO 的裂缝检测增强方案",
                 supporting_papers=["Paper A"],
@@ -406,6 +461,33 @@ class WorkflowTest(unittest.TestCase):
         self.assertIn(str(state.result_schema.get("result_summary_for_paper", "")), experiment_text)
         self.assertIn("主结果对比表", experiment_text)
         self.assertIn("训练曲线", experiment_text)
+
+    def test_section_writer_in_draft_mode_avoids_unverified_result_claims(self) -> None:
+        gateway = ModelGateway(ModelSettingsStore.default_settings())
+        state = ProjectState(
+            project_id="project-paper-sections-draft",
+            request=ProjectCreate(topic="道路裂缝检测", delivery_mode="draft"),
+            selected_innovation=InnovationCandidate(
+                claim="基于 YOLO 的裂缝检测增强方案",
+                supporting_papers=["Paper A"],
+                contrast_papers=["Paper B"],
+                novelty_reason="有效",
+                feasibility_score=8.0,
+                risk="可控",
+                verification_plan="补充实验",
+            ),
+        )
+        state = ExperimentDesignerAgent(gateway).run(state)
+        state = ProcedureWriterAgent(gateway).run(state)
+        state = ResultSchemaAgent(gateway).run(state)
+        state = ResultAnalystAgent(gateway).run(state)
+        state.paper_outline = ["摘要", "第4章 实验结果与分析", "结论"]
+
+        state = SectionWriterAgent(gateway).run(state)
+
+        experiment_text = state.paper_sections.get("第4章 实验结果与分析", "")
+        self.assertIn("真实实验结果、结果表和图表由用户完成实验后补充", experiment_text)
+        self.assertNotIn("主结果对比表", experiment_text)
 
     def test_gap_analyst_falls_back_when_structured_evidence_is_insufficient(self) -> None:
         state = ProjectState(

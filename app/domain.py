@@ -11,6 +11,7 @@ PdfParseStatus = Literal["not_applicable", "success", "degraded", "failed"]
 RetrievalStatus = Literal["success", "partial", "fallback"]
 GapType = Literal["method_gap", "data_gap", "scenario_gap", "evaluation_gap"]
 InnovationEvidenceMode = Literal["real", "fallback"]
+DeliveryMode = Literal["draft", "final"]
 MODEL_TASK_TYPES = (
     "planner",
     "reviewer",
@@ -38,6 +39,7 @@ class ProjectCreate:
     need_code: bool = True
     need_ppt: bool = True
     school_requirements: str = ""
+    delivery_mode: DeliveryMode = "draft"
 
 
 @dataclass(slots=True)

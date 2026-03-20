@@ -327,6 +327,7 @@ class ArtifactService:
 
     def _ppt_text(self, state: ProjectState) -> str:
         lines = ["答辩 PPT 结构", ""]
+        draft_mode = getattr(state.request, "delivery_mode", "draft") != "final"
         ppt_summary = str(state.result_schema.get("result_summary_for_ppt", "")).strip()
         mapping = state.result_schema.get("ppt_section_mapping", {})
         result_tables = state.result_schema.get("result_tables", [])
@@ -339,20 +340,25 @@ class ArtifactService:
                 lines.append(f"- 数据集：{'、'.join(state.experiment_plan.dataset)}")
                 lines.append(f"- 指标：{'、'.join(state.experiment_plan.metrics)}")
             if slide == "结果分析" and ppt_summary:
-                lines.append(f"- 结果摘要：{ppt_summary}")
-                lines.extend(self._format_result_slide_details(result_tables, result_figures))
+                label = "结果回填说明" if draft_mode else "结果摘要"
+                lines.append(f"- {label}：{ppt_summary}")
+                if draft_mode:
+                    lines.append("- 当前为初稿模式，结果页仅说明待回填的结果表、图表与分析要点。")
+                else:
+                    lines.extend(self._format_result_slide_details(result_tables, result_figures))
             if isinstance(mapping, dict) and slide in mapping:
                 lines.append(f"- 章节映射：{mapping[slide]}")
         return "\n".join(lines)
 
     def _format_result_analysis_blocks(self, state: ProjectState) -> list[str]:
         blocks: list[str] = []
+        draft_mode = getattr(state.request, "delivery_mode", "draft") != "final"
         analysis_text = str(state.result_schema.get("result_analysis_text", "")).strip()
         if analysis_text:
             blocks.append("### 结果分析摘要")
             blocks.append(analysis_text)
         result_tables = state.result_schema.get("result_tables", [])
-        if isinstance(result_tables, list):
+        if isinstance(result_tables, list) and not draft_mode:
             for table in result_tables[:2]:
                 if not isinstance(table, dict):
                     continue
@@ -371,7 +377,7 @@ class ArtifactService:
                         row_text = "；".join(f"{key}={value}" for key, value in first_row.items())
                         blocks.append(f"- 示例行：{row_text}")
         result_figures = state.result_schema.get("result_figures", [])
-        if isinstance(result_figures, list):
+        if isinstance(result_figures, list) and not draft_mode:
             for figure in result_figures[:2]:
                 if not isinstance(figure, dict):
                     continue
@@ -383,6 +389,12 @@ class ArtifactService:
                     blocks.append(f"- 图表说明：{caption}")
                 if insight:
                     blocks.append(f"- 分析结论：{insight}")
+        if draft_mode and state.experiment_plan:
+            blocks.append("### 结果回填说明")
+            blocks.append(
+                "当前版本为初稿论文，需在完成本地实验后回填主结果对比、消融实验、图表与误差分析。"
+            )
+            blocks.append(f"- 结果文件：{'、'.join(state.experiment_plan.result_files)}")
         return blocks
 
     def _format_result_slide_details(self, result_tables: object, result_figures: object) -> list[str]:

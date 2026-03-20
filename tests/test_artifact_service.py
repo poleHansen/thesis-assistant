@@ -304,6 +304,7 @@ class ArtifactServiceTest(unittest.TestCase):
 
     def test_thesis_and_ppt_consume_structured_result_analysis(self) -> None:
         state = self._build_state("", "")
+        state.request.delivery_mode = "final"
         state.paper_outline = ["摘要", "实验", "结论"]
         state.paper_sections = {
             "摘要": "摘要内容",
@@ -370,6 +371,72 @@ class ArtifactServiceTest(unittest.TestCase):
         self.assertIn("表格：主结果对比表", ppt_text)
         self.assertIn("图表：训练曲线", ppt_text)
         self.assertIn("章节映射：实验章节/结果分析段", ppt_text)
+
+    def test_draft_thesis_and_ppt_do_not_emit_fake_result_claims(self) -> None:
+        state = self._build_state("", "")
+        state.request.delivery_mode = "draft"
+        state.paper_outline = ["摘要", "实验", "结论"]
+        state.paper_sections = {
+            "摘要": "摘要内容",
+            "实验": "实验部分概述",
+            "结论": "结论内容",
+        }
+        state.ppt_outline = ["方法设计", "实验设置", "结果分析", "结论与展望"]
+        state.result_schema.update(
+            {
+                "result_analysis_text": "当前处于初稿模式，论文仅保留实验设计、实施流程与结果记录模板。真实结果、图表与定量结论需由用户完成实验后回填。",
+                "result_summary_for_paper": "实验结果部分暂以结果记录模板占位，待完成主结果对比、消融实验和误差分析后再补入正式论文。",
+                "result_summary_for_ppt": "答辩材料当前只展示实验设置与结果回填说明，真实结果页需在实验完成后更新。",
+                "result_tables": [
+                    {
+                        "title": "实验结果记录模板",
+                        "columns": ["实验项", "待填写结果", "说明"],
+                        "rows": [{"实验项": "主结果对比", "待填写结果": "待实验后填写", "说明": "填写各方案指标。"}],
+                        "summary": "当前为初稿模式，结果表由用户完成实验后回填。",
+                    }
+                ],
+                "result_figures": [
+                    {
+                        "title": "实验图表规划",
+                        "caption": "建议补充训练曲线与主结果对比图。",
+                        "insight": "当前仅输出图表规划，不生成虚拟结论。",
+                    }
+                ],
+                "ppt_section_mapping": {
+                    "结果分析": "实验章节/结果回填段",
+                    "结论与展望": "结论章节",
+                },
+            }
+        )
+
+        result = self.service.render_all(state)
+
+        thesis_path = Path(result.artifacts.thesis_docx or "")
+        ppt_path = Path(result.artifacts.defense_pptx or "")
+        if thesis_path.suffix == ".md":
+            thesis_text = thesis_path.read_text(encoding="utf-8")
+        elif Document is not None:
+            thesis_text = "\n".join(paragraph.text for paragraph in Document(thesis_path).paragraphs)
+        else:
+            thesis_text = ""
+        if ppt_path.suffix == ".txt":
+            ppt_text = ppt_path.read_text(encoding="utf-8")
+        elif Presentation is not None:
+            presentation = Presentation(ppt_path)
+            slide_texts: list[str] = []
+            for slide in presentation.slides:
+                for shape in slide.shapes:
+                    text = getattr(shape, "text", "")
+                    if text:
+                        slide_texts.append(text)
+            ppt_text = "\n".join(slide_texts)
+        else:
+            ppt_text = ""
+
+        self.assertIn("用户完成实验后回填", thesis_text)
+        self.assertIn("结果回填说明", ppt_text)
+        self.assertNotIn("表格：主结果对比表", ppt_text)
+        self.assertNotIn("训练曲线", thesis_text)
 
     def _build_state(self, word_template_path: str, ppt_template_path: str) -> ProjectState:
         state = ProjectState(
