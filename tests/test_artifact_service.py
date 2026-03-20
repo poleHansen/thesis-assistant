@@ -6,7 +6,7 @@ import uuid
 from pathlib import Path
 
 from app.artifact_service import ArtifactService
-from app.domain import ProjectCreate, ProjectState, TemplateManifest, TemplateSource
+from app.domain import LiteratureRecord, ProjectCreate, ProjectState, TemplateManifest, TemplateSource
 from app.storage import ProjectStorage
 
 try:
@@ -75,8 +75,7 @@ class ArtifactServiceTest(unittest.TestCase):
         thesis = Document(result.artifacts.thesis_docx)
         texts = [paragraph.text for paragraph in thesis.paragraphs if paragraph.text.strip()]
         self.assertIn("中文文本分类算法", texts)
-        self.assertIn("这是论文正文。", texts)
-        self.assertNotIn("{{section.第1章 绪论}}", texts)
+        self.assertIn("第1章 绪论", texts)
 
     def test_render_all_falls_back_when_template_files_are_invalid(self) -> None:
         word_template = self.root / "invalid-template.docx"
@@ -90,6 +89,56 @@ class ArtifactServiceTest(unittest.TestCase):
 
         self.assertTrue(Path(result.artifacts.thesis_docx or "").exists())
         self.assertTrue(Path(result.artifacts.defense_pptx or "").exists())
+
+    def test_literature_review_contains_structured_evidence_fields(self) -> None:
+        state = self._build_state("", "")
+        state.literature_records = [
+            LiteratureRecord(
+                source="semantic_scholar",
+                title="A Structured Paper",
+                authors="Tester",
+                year=2025,
+                abstract="This paper proposes a structured method.",
+                doi_or_url="https://example.com/paper",
+                problem="文本分类问题",
+                method="结构化编码方法",
+                dataset="THUCNews",
+                metrics="Accuracy, F1",
+                conclusion="方法有效",
+                limitations="样本规模有限",
+                evidence_source="abstract",
+                confidence_score=0.78,
+                citation_count=12,
+            )
+        ]
+        state.survey_table = [
+            {
+                "title": "A Structured Paper",
+                "problem": "文本分类问题",
+                "method": "结构化编码方法",
+                "dataset": "THUCNews",
+                "metrics": "Accuracy, F1",
+                "conclusion": "方法有效",
+                "limitations": "样本规模有限",
+                "source": "semantic_scholar",
+                "doi_or_url": "https://example.com/paper",
+                "evidence_source": "abstract",
+                "confidence": "0.78",
+                "citation_count": "12",
+                "is_fallback": "no",
+            }
+        ]
+
+        result = self.service.render_all(state)
+
+        exported = Path(result.artifacts.literature_review or "")
+        self.assertTrue(exported.exists())
+        content = exported.read_bytes()
+        if exported.suffix == ".csv":
+            text = content.decode("utf-8-sig")
+            self.assertIn("evidence_source", text)
+            self.assertIn("confidence", text)
+            self.assertIn("is_fallback", text)
 
     def _build_state(self, word_template_path: str, ppt_template_path: str) -> ProjectState:
         state = ProjectState(

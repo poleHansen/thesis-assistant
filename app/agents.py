@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from difflib import SequenceMatcher
 from pathlib import Path
 from urllib import error, parse, request
 from xml.etree import ElementTree
@@ -11,12 +12,68 @@ from app.model_gateway import ModelGateway
 from app.utils import slugify
 
 
+def _contains_cjk(text: str) -> bool:
+    return bool(re.search(r"[\u4e00-\u9fff]", text or ""))
+
+
+def _looks_english_query(text: str) -> bool:
+    candidate = _clean_text(text)
+    if not candidate:
+        return False
+    if _contains_cjk(candidate):
+        return False
+    letters = re.findall(r"[A-Za-z]", candidate)
+    if len(letters) < 6:
+        return False
+    non_word_ratio = len(re.findall(r"[^A-Za-z0-9\s\-_/():,.]", candidate)) / max(len(candidate), 1)
+    return non_word_ratio < 0.2
+
+
+def _sanitize_translated_topic(content: str) -> str:
+    candidate = _clean_text(content)
+    if not candidate:
+        return ""
+    if "\n" in content:
+        candidate = _clean_text(content.splitlines()[0])
+    candidate = re.sub(r"^[\-•\d.)\s]+", "", candidate)
+    candidate = re.sub(r"^(translation|english title|translated topic)\s*[:：-]\s*", "", candidate, flags=re.IGNORECASE)
+    return _clean_text(candidate.strip('"“”'))
+
+
 def _extract_keywords(topic: str) -> list[str]:
-    parts = re.split(r"[\s,，、;/；]+", topic)
+    normalized = _clean_text(topic)
+    parts = re.split(r"[\s,，、;/；:()\[\]\-]+", normalized)
     keywords = [part.strip() for part in parts if part.strip()]
-    if topic not in keywords:
-        keywords.insert(0, topic.strip())
-    return keywords[:8]
+    if normalized and len(parts) > 1:
+        noun_phrase = " ".join(part for part in parts[:4] if part)
+        if noun_phrase:
+            keywords.insert(0, noun_phrase)
+    if normalized not in keywords:
+        keywords.insert(0, normalized)
+    deduped: list[str] = []
+    for keyword in keywords:
+        lowered = keyword.lower()
+        if not lowered or lowered in {item.lower() for item in deduped}:
+            continue
+        deduped.append(keyword)
+    return deduped[:8]
+
+
+def _compose_query_keywords(original_topic: str, translated_topic: str | None) -> list[str]:
+    prioritized: list[str] = []
+    if translated_topic and _looks_english_query(translated_topic):
+        prioritized.extend(_extract_keywords(translated_topic))
+    prioritized.extend(_extract_keywords(original_topic))
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for keyword in prioritized:
+        normalized = keyword.strip().lower()
+        if not normalized or normalized in seen:
+            continue
+        deduped.append(keyword.strip())
+        seen.add(normalized)
+    return deduped[:8]
 
 
 def _find_first(pattern: str, text: str, fallback: str) -> str:
@@ -28,13 +85,170 @@ def _heuristic_survey_row(record: LiteratureRecord) -> dict[str, str]:
     abstract = record.abstract or ""
     return {
         "title": record.title,
-        "problem": _find_first(r"(?:problem|task|aims? to)\s+(.*?)[\.;]", abstract, "围绕该主题的基础研究问题"),
-        "method": _find_first(r"(?:method|approach|framework|proposes?)\s+(.*?)[\.;]", abstract, "结合主流方法的改进方案"),
-        "dataset": _find_first(r"(?:dataset|data|benchmarks?)\s+(.*?)[\.;]", abstract, "公开数据集/自建样本"),
-        "metrics": _find_first(r"(?:metric|metrics|evaluated by)\s+(.*?)[\.;]", abstract, "Accuracy / F1 / Recall"),
-        "conclusion": abstract[:160] if abstract else "论文结论待从全文进一步提炼",
-        "limitations": "依赖摘要推断，仍需结合全文核验",
+        "problem": record.problem or _find_first(r"(?:problem|task|aims? to)\s+(.*?)[\.;]", abstract, "围绕该主题的基础研究问题"),
+        "method": record.method or _find_first(r"(?:method|approach|framework|proposes?)\s+(.*?)[\.;]", abstract, "结合主流方法的改进方案"),
+        "dataset": record.dataset or _find_first(r"(?:dataset|data|benchmarks?)\s+(.*?)[\.;]", abstract, "公开数据集/自建样本"),
+        "metrics": record.metrics or _find_first(r"(?:metric|metrics|evaluated by)\s+(.*?)[\.;]", abstract, "Accuracy / F1 / Recall"),
+        "conclusion": record.conclusion or abstract[:160] if abstract else "论文结论待从全文进一步提炼",
+        "limitations": record.limitations or "依赖摘要推断，仍需结合全文核验",
+        "source": record.source,
+        "doi_or_url": record.doi_or_url,
+        "evidence_source": record.evidence_source,
+        "confidence": f"{record.confidence_score:.2f}",
+        "citation_count": str(record.citation_count),
+        "is_fallback": "yes" if record.is_fallback else "no",
     }
+
+
+def _clean_text(value: str) -> str:
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _sentence_chunks(text: str) -> list[str]:
+    if not text:
+        return []
+    return [chunk.strip() for chunk in re.split(r"(?<=[。！？.!?;；])\s+|\n+", text) if chunk.strip()]
+
+
+def _extract_field(patterns: list[str], text: str, fallback: str) -> tuple[str, str]:
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            value = _clean_text(match.group(1))
+            if value:
+                return value, value
+    sentences = _sentence_chunks(text)
+    for sentence in sentences:
+        lowered = sentence.lower()
+        if any(token in lowered for token in ["problem", "task", "aim", "method", "approach", "dataset", "benchmark", "metric", "result", "limitation", "conclusion"]):
+            candidate = _clean_text(sentence)
+            if candidate:
+                return candidate, candidate
+    return fallback, ""
+
+
+def _build_structured_record(record: LiteratureRecord, source_text: str) -> LiteratureRecord:
+    problem, problem_quote = _extract_field(
+        [r"(?:problem|task|objective|aims? to)\s+(.*?)[\.;]", r"(?:研究问题|目标|任务为)[:：]?\s*(.*?)[。；]"],
+        source_text,
+        "围绕该主题的基础研究问题",
+    )
+    method, method_quote = _extract_field(
+        [r"(?:method|approach|framework|proposes?)\s+(.*?)[\.;]", r"(?:提出|方法|框架)[:：]?\s*(.*?)[。；]"],
+        source_text,
+        "结合主流方法的改进方案",
+    )
+    dataset, dataset_quote = _extract_field(
+        [r"(?:dataset|data|benchmark[s]?)\s+(.*?)[\.;]", r"(?:数据集|样本)[:：]?\s*(.*?)[。；]"],
+        source_text,
+        "公开数据集/自建样本",
+    )
+    metrics, metrics_quote = _extract_field(
+        [r"(?:metric|metrics|evaluated by)\s+(.*?)[\.;]", r"(?:指标|评估)[:：]?\s*(.*?)[。；]"],
+        source_text,
+        "Accuracy / F1 / Recall",
+    )
+    conclusion, conclusion_quote = _extract_field(
+        [r"(?:result|conclusion|finds?|shows?)\s+(.*?)[\.;]", r"(?:结论|结果表明)[:：]?\s*(.*?)[。；]"],
+        source_text,
+        "论文结论待从全文进一步提炼",
+    )
+    limitations, limitations_quote = _extract_field(
+        [r"(?:limit(?:ation)?s?)\s+(.*?)[\.;]", r"(?:局限|不足)[:：]?\s*(.*?)[。；]"],
+        source_text,
+        "仍需结合全文或人工核验局限性",
+    )
+    quotes = [item for item in [problem_quote, method_quote, dataset_quote, metrics_quote, conclusion_quote, limitations_quote] if item]
+    evidence_source = "pdf" if record.pdf_path and source_text != (record.abstract or "") else "abstract"
+    evidence_spans = list(dict.fromkeys(quotes[:4]))
+    confidence = 0.85 if evidence_source == "pdf" else 0.7
+    if record.is_fallback:
+        confidence = 0.25
+    return LiteratureRecord(
+        source=record.source,
+        title=record.title,
+        authors=record.authors,
+        year=record.year,
+        abstract=record.abstract,
+        doi_or_url=record.doi_or_url,
+        pdf_path=record.pdf_path,
+        evidence_spans=evidence_spans,
+        keywords=record.keywords,
+        citation_count=record.citation_count,
+        retrieval_rank=record.retrieval_rank,
+        is_fallback=record.is_fallback,
+        problem=problem,
+        method=method,
+        dataset=dataset,
+        metrics=metrics,
+        conclusion=conclusion,
+        limitations=limitations,
+        evidence_source=evidence_source,
+        confidence_score=confidence,
+        evidence_quote=quotes[0] if quotes else (record.abstract[:180] if record.abstract else ""),
+    )
+
+
+def _try_parse_json_object(content: str) -> dict[str, str]:
+    if not content:
+        return {}
+    candidate = content.strip()
+    if "{" in candidate and "}" in candidate:
+        candidate = candidate[candidate.find("{") : candidate.rfind("}") + 1]
+    try:
+        parsed = json.loads(candidate)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    return {
+        str(key): _clean_text(str(value))
+        for key, value in parsed.items()
+        if value is not None
+    }
+
+
+def _merge_reader_result(base: LiteratureRecord, llm_fields: dict[str, str]) -> LiteratureRecord:
+    if not llm_fields:
+        return base
+
+    def pick(field_name: str, fallback: str) -> str:
+        value = _clean_text(llm_fields.get(field_name, ""))
+        return value or fallback
+
+    try:
+        confidence = float(llm_fields.get("confidence_score", base.confidence_score))
+    except (TypeError, ValueError):
+        confidence = base.confidence_score
+
+    evidence_quote = pick("evidence_quote", base.evidence_quote)
+    evidence_spans = list(
+        dict.fromkeys([*base.evidence_spans, evidence_quote] if evidence_quote else base.evidence_spans)
+    )
+
+    return LiteratureRecord(
+        source=base.source,
+        title=base.title,
+        authors=base.authors,
+        year=base.year,
+        abstract=base.abstract,
+        doi_or_url=base.doi_or_url,
+        pdf_path=base.pdf_path,
+        evidence_spans=evidence_spans,
+        keywords=base.keywords,
+        citation_count=base.citation_count,
+        retrieval_rank=base.retrieval_rank,
+        is_fallback=base.is_fallback,
+        problem=pick("problem", base.problem),
+        method=pick("method", base.method),
+        dataset=pick("dataset", base.dataset),
+        metrics=pick("metrics", base.metrics),
+        conclusion=pick("conclusion", base.conclusion),
+        limitations=pick("limitations", base.limitations),
+        evidence_source=pick("evidence_source", base.evidence_source),
+        confidence_score=max(base.confidence_score, confidence),
+        evidence_quote=evidence_quote,
+    )
 
 
 class BaseAgent:
@@ -56,9 +270,11 @@ class TopicPlannerAgent(BaseAgent):
     task_type = "planner"
 
     def run(self, state: ProjectState) -> ProjectState:
-        keywords = _extract_keywords(state.request.topic)
+        translated_topic = self._translate_topic_for_search(state)
+        keywords = _compose_query_keywords(state.request.topic, translated_topic)
         prompt = (
             f"研究方向：{state.request.topic}\n"
+            f"英文检索题目：{translated_topic or state.request.topic}\n"
             f"请扩展一组中英文检索关键词，强调算法论文、实验、数据集、评估指标。"
         )
         result = self.gateway.complete(
@@ -66,10 +282,62 @@ class TopicPlannerAgent(BaseAgent):
             prompt,
             system_prompt="You plan literature retrieval queries.",
         )
+        state.result_schema["original_topic"] = state.request.topic
+        state.result_schema["translated_topic"] = translated_topic or state.request.topic
         state.result_schema["query_keywords"] = keywords
         state.result_schema["planner_trace"] = result.content
         self.log(state, f"generated {len(keywords)} keywords via {result.provider}")
         return state
+
+    def _translate_topic_for_search(self, state: ProjectState) -> str | None:
+        topic = _clean_text(state.request.topic)
+        if not topic:
+            return None
+
+        if not self._should_translate_topic(topic, state.request.language):
+            state.result_schema["translation_provider"] = "skipped"
+            state.result_schema["translation_fallback_used"] = False
+            self.log(state, "translation skipped; using original topic")
+            return None
+
+        prompt = (
+            "请将下面的中文研究题目翻译成一条适合 OpenAlex、arXiv 等英文学术数据库检索的英文题目。"
+            "仅返回英文题目本身，不要解释，不要项目符号，不要 JSON。\n\n"
+            f"中文题目：{topic}"
+        )
+        try:
+            result = self.gateway.complete(
+                self.task_type,
+                prompt,
+                system_prompt="You translate Chinese research topics into concise academic English search queries.",
+            )
+        except Exception as exc:
+            state.result_schema["translation_provider"] = "error"
+            state.result_schema["translation_fallback_used"] = True
+            state.result_schema["translation_failed"] = True
+            state.warnings.append(f"题目翻译失败，已回退原始题目检索：{exc}")
+            self.log(state, "translation failed; falling back to original topic")
+            return None
+
+        translated_topic = _sanitize_translated_topic(result.content)
+        if not _looks_english_query(translated_topic):
+            state.result_schema["translation_provider"] = result.provider
+            state.result_schema["translation_fallback_used"] = True
+            state.result_schema["translation_failed"] = True
+            state.warnings.append("题目翻译结果不可用，已回退原始题目检索。")
+            self.log(state, f"translation unusable via {result.provider}; fallback to original topic")
+            return None
+
+        state.result_schema["translation_provider"] = result.provider
+        state.result_schema["translation_fallback_used"] = result.fallback_used
+        state.result_schema["translation_failed"] = False
+        self.log(state, f"translated topic via {result.provider}: {translated_topic}")
+        return translated_topic
+
+    def _should_translate_topic(self, topic: str, language: str) -> bool:
+        if language.startswith("zh"):
+            return True
+        return _contains_cjk(topic)
 
 
 class RetrieverAgent(BaseAgent):
@@ -77,49 +345,77 @@ class RetrieverAgent(BaseAgent):
     task_type = "survey_synthesizer"
 
     def run(self, state: ProjectState) -> ProjectState:
+        translated_topic = state.result_schema.get("translated_topic") or state.request.topic
         keywords: list[str] = state.result_schema.get(
-            "query_keywords", _extract_keywords(state.request.topic)
+            "query_keywords", _compose_query_keywords(state.request.topic, translated_topic)
         )
         collected: list[LiteratureRecord] = []
+        diagnostics: list[dict[str, str | int | bool]] = []
         for query in keywords[:3]:
-            collected.extend(self._search_openalex(query))
-            collected.extend(self._search_arxiv(query))
+            query_language = "english" if _looks_english_query(query) else "original"
+            openalex_records, openalex_diag = self._search_openalex(query, state.request.topic, query_language)
+            arxiv_records, arxiv_diag = self._search_arxiv(query, state.request.topic, query_language)
+            semantic_records, semantic_diag = self._search_semantic_scholar(query, state.request.topic, query_language)
+            diagnostics.extend([openalex_diag, arxiv_diag, semantic_diag])
+            collected.extend(openalex_records)
+            collected.extend(arxiv_records)
+            collected.extend(semantic_records)
             if len(collected) >= 6:
-                break
-
-        seen = set()
-        deduped: list[LiteratureRecord] = []
-        for item in collected:
-            key = item.title.lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            deduped.append(item)
-            if len(deduped) >= 8:
                 break
 
         if state.uploaded_pdf_paths:
             for pdf_path in state.uploaded_pdf_paths:
                 record = self._parse_uploaded_pdf(Path(pdf_path))
                 if record:
-                    deduped.append(record)
+                    collected.append(record)
+                    diagnostics.append(
+                        {
+                            "source": "user_pdf",
+                            "query": pdf_path,
+                            "original_query": pdf_path,
+                            "query_language": "file",
+                            "ok": True,
+                            "count": 1,
+                            "error": "",
+                        }
+                    )
+
+        deduped = self._dedupe_and_rank(collected)
+        state.retrieval_diagnostics = diagnostics
 
         if not deduped:
-            deduped = self._offline_fallback(state.request.topic)
+            deduped = self._offline_fallback(state.request.topic, translated_topic)
             state.warnings.append("未能在线检索到文献，已使用离线占位文献继续流程。")
+            failed_sources = [
+                item for item in diagnostics if item.get("source") != "user_pdf" and not item.get("ok")
+            ]
+            if failed_sources:
+                for item in failed_sources:
+                    state.warnings.append(
+                        f"检索源 {item.get('source')} 失败：{item.get('error') or '未知错误'}"
+                    )
+            elif diagnostics:
+                state.warnings.append("在线检索请求已发出，但未命中可用文献结果。")
+
+        for index, item in enumerate(deduped, start=1):
+            item.retrieval_rank = index
 
         state.literature_records = deduped
         self.log(state, f"collected {len(deduped)} literature records")
         return state
 
-    def _search_openalex(self, query: str) -> list[LiteratureRecord]:
+    def _search_openalex(
+        self, query: str, original_query: str, query_language: str
+    ) -> tuple[list[LiteratureRecord], dict[str, str | int | bool]]:
         encoded = parse.quote(query)
         url = f"https://api.openalex.org/works?search={encoded}&per-page=3"
         try:
             with request.urlopen(url, timeout=15) as response:
                 payload = json.loads(response.read().decode("utf-8"))
-        except Exception:
-            return []
+        except Exception as exc:
+            return [], self._build_diagnostic(
+                "openalex", query, False, 0, self._normalize_error(exc), original_query, query_language
+            )
 
         records: list[LiteratureRecord] = []
         for item in payload.get("results", []):
@@ -149,18 +445,23 @@ class RetrieverAgent(BaseAgent):
                     abstract=abstract or "OpenAlex 摘要缺失",
                     doi_or_url=item.get("doi") or item.get("id") or "",
                     keywords=_extract_keywords(query),
+                    citation_count=int(item.get("cited_by_count") or 0),
                 )
             )
-        return records
+        return records, self._build_diagnostic("openalex", query, True, len(records), "", original_query, query_language)
 
-    def _search_arxiv(self, query: str) -> list[LiteratureRecord]:
+    def _search_arxiv(
+        self, query: str, original_query: str, query_language: str
+    ) -> tuple[list[LiteratureRecord], dict[str, str | int | bool]]:
         encoded = parse.quote(query)
         url = f"http://export.arxiv.org/api/query?search_query=all:{encoded}&start=0&max_results=3"
         try:
             with request.urlopen(url, timeout=15) as response:
                 raw = response.read().decode("utf-8")
-        except error.URLError:
-            return []
+        except Exception as exc:
+            return [], self._build_diagnostic(
+                "arxiv", query, False, 0, self._normalize_error(exc), original_query, query_language
+            )
 
         root = ElementTree.fromstring(raw)
         ns = {"atom": "http://www.w3.org/2005/Atom"}
@@ -186,7 +487,43 @@ class RetrieverAgent(BaseAgent):
                     keywords=_extract_keywords(query),
                 )
             )
-        return records
+        return records, self._build_diagnostic("arxiv", query, True, len(records), "", original_query, query_language)
+
+    def _search_semantic_scholar(
+        self, query: str, original_query: str, query_language: str
+    ) -> tuple[list[LiteratureRecord], dict[str, str | int | bool]]:
+        encoded = parse.quote(query)
+        url = (
+            "https://api.semanticscholar.org/graph/v1/paper/search"
+            f"?query={encoded}&limit=3&fields=title,year,abstract,authors,url,citationCount"
+        )
+        try:
+            with request.urlopen(url, timeout=15) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except Exception as exc:
+            return [], self._build_diagnostic(
+                "semantic_scholar", query, False, 0, self._normalize_error(exc), original_query, query_language
+            )
+
+        records: list[LiteratureRecord] = []
+        for item in payload.get("data", []):
+            authors = ", ".join(author.get("name", "") for author in item.get("authors", [])[:5]).strip(", ")
+            title = item.get("title") or query
+            records.append(
+                LiteratureRecord(
+                    source="semantic_scholar",
+                    title=title,
+                    authors=authors or "Unknown",
+                    year=int(item.get("year") or 2024),
+                    abstract=item.get("abstract") or "Semantic Scholar 摘要缺失",
+                    doi_or_url=item.get("url") or "",
+                    keywords=_extract_keywords(query),
+                    citation_count=int(item.get("citationCount") or 0),
+                )
+            )
+        return records, self._build_diagnostic(
+            "semantic_scholar", query, True, len(records), "", original_query, query_language
+        )
 
     def _parse_uploaded_pdf(self, pdf_path: Path) -> LiteratureRecord | None:
         try:
@@ -219,30 +556,162 @@ class RetrieverAgent(BaseAgent):
             abstract=abstract,
             doi_or_url=str(pdf_path),
             pdf_path=str(pdf_path),
+            evidence_source="pdf",
+            confidence_score=0.8,
+            evidence_quote=abstract[:180],
         )
 
-    def _offline_fallback(self, topic: str) -> list[LiteratureRecord]:
-        base = slugify(topic).replace("-", " ")
+    def _dedupe_and_rank(self, records: list[LiteratureRecord]) -> list[LiteratureRecord]:
+        ranked = sorted(records, key=self._quality_score, reverse=True)
+        deduped: list[LiteratureRecord] = []
+        for item in ranked:
+            title = item.title.strip().lower()
+            duplicate = False
+            for existing in deduped:
+                similarity = SequenceMatcher(None, title, existing.title.strip().lower()).ratio()
+                if similarity >= 0.88:
+                    duplicate = True
+                    break
+            if duplicate:
+                continue
+            deduped.append(item)
+            if len(deduped) >= 10:
+                break
+        return deduped
+
+    def _quality_score(self, record: LiteratureRecord) -> tuple[int, int, int, int]:
+        return (
+            1 if record.pdf_path else 0,
+            int(record.citation_count or 0),
+            int(record.year or 0),
+            len(record.abstract or ""),
+        )
+
+    def _build_diagnostic(
+        self,
+        source: str,
+        query: str,
+        ok: bool,
+        count: int,
+        error_message: str,
+        original_query: str = "",
+        query_language: str = "unknown",
+    ) -> dict[str, str | int | bool]:
+        return {
+            "source": source,
+            "query": query,
+            "original_query": original_query or query,
+            "query_language": query_language,
+            "ok": ok,
+            "count": count,
+            "error": error_message,
+        }
+
+    def _normalize_error(self, exc: Exception) -> str:
+        if isinstance(exc, error.HTTPError):
+            return f"HTTP {exc.code}: {exc.reason}"
+        if isinstance(exc, error.URLError):
+            return f"URL Error: {exc.reason}"
+        message = str(exc).strip()
+        return message or exc.__class__.__name__
+
+    def _offline_fallback(self, topic: str, translated_topic: str | None = None) -> list[LiteratureRecord]:
+        search_topic = translated_topic or topic
+        base = slugify(search_topic).replace("-", " ")
         return [
             LiteratureRecord(
                 source="offline_stub",
                 title=f"{base.title()} 的多视角综述与实验研究",
                 authors="Offline Stub",
                 year=2024,
-                abstract=f"本文围绕 {topic} 的方法、数据集与评测方式进行综述，并总结常见局限。",
+                abstract=f"本文围绕 {search_topic} 的方法、数据集与评测方式进行综述，并总结常见局限。",
                 doi_or_url="offline://paper-1",
-                keywords=_extract_keywords(topic),
+                keywords=_compose_query_keywords(topic, translated_topic),
+                is_fallback=True,
+                confidence_score=0.25,
             ),
             LiteratureRecord(
                 source="offline_stub",
-                title=f"基于 {topic} 的算法优化框架",
+                title=f"基于 {search_topic} 的算法优化框架",
                 authors="Offline Stub",
                 year=2023,
-                abstract=f"研究提出一种面向 {topic} 的改进框架，对比主流方法并报告准确率与F1值。",
+                abstract=f"研究提出一种面向 {search_topic} 的改进框架，对比主流方法并报告准确率与F1值。",
                 doi_or_url="offline://paper-2",
-                keywords=_extract_keywords(topic),
+                keywords=_compose_query_keywords(topic, translated_topic),
+                is_fallback=True,
+                confidence_score=0.25,
             ),
         ]
+
+
+class ReaderAgent(BaseAgent):
+    name = "reader"
+    task_type = "survey_synthesizer"
+
+    def run(self, state: ProjectState) -> ProjectState:
+        enriched: list[LiteratureRecord] = []
+        for record in state.literature_records:
+            source_text = self._resolve_source_text(record)
+            structured = _build_structured_record(record, source_text)
+            structured = self._refine_with_llm(record, structured, source_text)
+            enriched.append(structured)
+        state.literature_records = enriched
+        state.literature_detail_fields = [
+            "problem",
+            "method",
+            "dataset",
+            "metrics",
+            "conclusion",
+            "limitations",
+            "source",
+            "doi_or_url",
+            "evidence_source",
+            "confidence_score",
+        ]
+        self.log(state, f"structured {len(enriched)} literature records")
+        return state
+
+    def _refine_with_llm(
+        self,
+        original: LiteratureRecord,
+        structured: LiteratureRecord,
+        source_text: str,
+    ) -> LiteratureRecord:
+        if original.is_fallback or len(source_text) < 120:
+            return structured
+
+        prompt = (
+            "请从以下论文文本中提取结构化文献信息，并严格输出 JSON 对象，不要输出额外说明。"
+            "JSON 字段必须包含：problem, method, dataset, metrics, conclusion, limitations, evidence_source, confidence_score, evidence_quote。"
+            "若信息缺失，请保留空字符串；confidence_score 范围为 0 到 1。\n\n"
+            f"标题：{original.title}\n"
+            f"作者：{original.authors}\n"
+            f"来源：{original.source}\n"
+            f"文本：{source_text[:4000]}"
+        )
+        result = self.gateway.complete(
+            self.task_type,
+            prompt,
+            system_prompt="You extract literature fields and return JSON only.",
+        )
+        parsed = _try_parse_json_object(result.content)
+        return _merge_reader_result(structured, parsed)
+
+    def _resolve_source_text(self, record: LiteratureRecord) -> str:
+        if record.pdf_path:
+            path = Path(record.pdf_path)
+            if path.exists():
+                try:
+                    from pypdf import PdfReader  # type: ignore
+
+                    reader = PdfReader(str(path))
+                    text = " ".join((page.extract_text() or "") for page in reader.pages[:5])
+                    text = _clean_text(text)
+                    if text:
+                        return text
+                except Exception:
+                    pass
+        return record.abstract or record.title
 
 
 class EvidenceExtractorAgent(BaseAgent):
@@ -623,6 +1092,7 @@ class ReviewerAgent(BaseAgent):
 AGENT_PIPELINE = [
     TopicPlannerAgent,
     RetrieverAgent,
+    ReaderAgent,
     EvidenceExtractorAgent,
     SurveySynthesizerAgent,
     GapAnalystAgent,

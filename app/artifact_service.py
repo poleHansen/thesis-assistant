@@ -99,6 +99,12 @@ class ArtifactService:
                 "metrics",
                 "conclusion",
                 "limitations",
+                "source",
+                "doi_or_url",
+                "evidence_source",
+                "confidence",
+                "citation_count",
+                "is_fallback",
             ]
             sheet.append(headers)
             for row in state.survey_table:
@@ -115,6 +121,12 @@ class ArtifactService:
                 "metrics",
                 "conclusion",
                 "limitations",
+                "source",
+                "doi_or_url",
+                "evidence_source",
+                "confidence",
+                "citation_count",
+                "is_fallback",
             ]
             with path.open("w", encoding="utf-8-sig", newline="") as handle:
                 writer = csv.DictWriter(handle, fieldnames=headers)

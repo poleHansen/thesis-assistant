@@ -75,14 +75,29 @@ export function ProjectDetailPage() {
           <div className="upload-grid">
             <UploadDropzone
               title="上传 Word 模板"
-              description="学校模板优先适配。若不上传，系统会自动使用模板库。"
-              accept=".doc,.docx"
+              description="请上传 .docx，并优先使用 {{cover.题目}}、{{section.摘要}} 这类占位符；若未上传，系统会自动使用内置模板。"
+              accept=".docx"
               kind="word_template"
               onUpload={async (kind, file) => {
                 await uploadMutation.mutateAsync({ kind, file });
               }}
               busy={uploadMutation.isPending}
             />
+            <section className="panel glass-card">
+              <div className="panel__header">
+                <div>
+                  <p className="eyebrow">Template Example</p>
+                  <h3>用户模板示例说明</h3>
+                </div>
+              </div>
+              <div className="stack-list">
+                <p className="muted">推荐上传 .docx，并让每个占位符单独占一段。</p>
+                <p>{"封面示例：{{cover.题目}}"}</p>
+                <p>{"正文示例：先写一级标题“摘要”，下一段写 {{section.摘要}}"}</p>
+                <p>{"章节示例：先写一级标题“第1章 绪论”，下一段写 {{section.第1章 绪论}}"}</p>
+                <p className="muted">如果没有占位符，系统会回退为按一级标题定位插入。</p>
+              </div>
+            </section>
             <UploadDropzone
               title="上传答辩 PPT 模板"
               description="可选。不上传时，系统将自动使用内置模板。"
@@ -130,6 +145,28 @@ export function ProjectDetailPage() {
               <section className="panel glass-card">
                 <div className="panel__header">
                   <div>
+                    <p className="eyebrow">Retrieval</p>
+                    <h3>在线检索状态</h3>
+                  </div>
+                </div>
+                <div className="stack-list">
+                  {project.retrieval_diagnostics.length === 0 ? (
+                    <p className="muted">运行后会展示 OpenAlex、arXiv、Semantic Scholar 等检索状态。</p>
+                  ) : null}
+                  {project.retrieval_diagnostics.map((item, index) => (
+                    <article key={`${item.source}-${item.query}-${index}`} className="paper-card">
+                      <strong>{item.source}</strong>
+                      <span>
+                        查询：{item.query} · 状态：{item.ok ? "成功" : "失败"} · 命中：{item.count}
+                      </span>
+                      {item.error ? <p className="error-text">失败原因：{item.error}</p> : null}
+                    </article>
+                  ))}
+                </div>
+              </section>
+              <section className="panel glass-card">
+                <div className="panel__header">
+                  <div>
                     <p className="eyebrow">Literature</p>
                     <h3>文献摘要</h3>
                   </div>
@@ -144,7 +181,57 @@ export function ProjectDetailPage() {
                       <span>
                         {item.authors} · {item.year}
                       </span>
+                      <div className="paper-card__meta-row">
+                        <span className="paper-card__badge">排序 #{item.retrieval_rank || 0}</span>
+                        <span className="paper-card__badge">来源 {item.source}</span>
+                        <span className="paper-card__badge">证据 {item.evidence_source}</span>
+                        <span className="paper-card__badge">
+                          置信度 {item.confidence_score.toFixed(2)}
+                        </span>
+                        {item.citation_count ? (
+                          <span className="paper-card__badge">引用 {item.citation_count}</span>
+                        ) : null}
+                        {item.is_fallback ? (
+                          <span className="paper-card__badge paper-card__badge--warning">
+                            离线占位
+                          </span>
+                        ) : null}
+                      </div>
                       <p>{item.abstract}</p>
+                      <div className="paper-card__details">
+                        <p>
+                          <strong>问题：</strong>
+                          {item.problem}
+                        </p>
+                        <p>
+                          <strong>方法：</strong>
+                          {item.method}
+                        </p>
+                        <p>
+                          <strong>数据集：</strong>
+                          {item.dataset}
+                        </p>
+                        <p>
+                          <strong>指标：</strong>
+                          {item.metrics}
+                        </p>
+                        <p>
+                          <strong>结论：</strong>
+                          {item.conclusion}
+                        </p>
+                        <p>
+                          <strong>局限：</strong>
+                          {item.limitations}
+                        </p>
+                      </div>
+                      {item.evidence_quote ? (
+                        <blockquote className="paper-card__quote">{item.evidence_quote}</blockquote>
+                      ) : null}
+                      {item.doi_or_url ? (
+                        <a href={item.doi_or_url} target="_blank" rel="noreferrer">
+                          查看来源
+                        </a>
+                      ) : null}
                     </article>
                   ))}
                 </div>

@@ -121,6 +121,18 @@ class LiteratureRecord:
     pdf_path: str | None = None
     evidence_spans: list[str] = field(default_factory=list)
     keywords: list[str] = field(default_factory=list)
+    citation_count: int = 0
+    retrieval_rank: int = 0
+    is_fallback: bool = False
+    problem: str = ""
+    method: str = ""
+    dataset: str = ""
+    metrics: str = ""
+    conclusion: str = ""
+    limitations: str = ""
+    evidence_source: str = "abstract"
+    confidence_score: float = 0.0
+    evidence_quote: str = ""
 
 
 @dataclass(slots=True)
@@ -167,7 +179,9 @@ class ProjectState:
     template_manifest: TemplateManifest | None = None
     uploaded_pdf_paths: list[str] = field(default_factory=list)
     literature_records: list[LiteratureRecord] = field(default_factory=list)
+    retrieval_diagnostics: list[dict[str, Any]] = field(default_factory=list)
     survey_table: list[dict[str, Any]] = field(default_factory=list)
+    literature_detail_fields: list[str] = field(default_factory=list)
     innovation_candidates: list[InnovationCandidate] = field(default_factory=list)
     selected_innovation: InnovationCandidate | None = None
     experiment_plan: ExperimentPlan | None = None

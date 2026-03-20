@@ -50,6 +50,26 @@ export interface LiteratureRecord {
   pdf_path?: string | null;
   evidence_spans: string[];
   keywords: string[];
+  citation_count: number;
+  retrieval_rank: number;
+  is_fallback: boolean;
+  problem: string;
+  method: string;
+  dataset: string;
+  metrics: string;
+  conclusion: string;
+  limitations: string;
+  evidence_source: string;
+  confidence_score: number;
+  evidence_quote: string;
+}
+
+export interface RetrievalDiagnostic {
+  source: string;
+  query: string;
+  ok: boolean;
+  count: number;
+  error: string;
 }
 
 export interface InnovationCandidate {
@@ -92,7 +112,9 @@ export interface ProjectState {
   template_manifest?: TemplateManifest | null;
   uploaded_pdf_paths: string[];
   literature_records: LiteratureRecord[];
+  retrieval_diagnostics: RetrievalDiagnostic[];
   survey_table: Array<Record<string, unknown>>;
+  literature_detail_fields: string[];
   innovation_candidates: InnovationCandidate[];
   selected_innovation?: InnovationCandidate | null;
   experiment_plan?: ExperimentPlan | null;

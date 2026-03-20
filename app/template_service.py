@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from app.domain import ProjectCreate, TemplateManifest, TemplateSource
@@ -27,6 +28,8 @@ DEFAULT_USER_STYLE_MAPPING = {
     "body": "Normal",
     "caption": "Caption",
 }
+
+PLACEHOLDER_PATTERN = re.compile(r"\{\{\s*([\w\-.\u4e00-\u9fff]+)\s*\}\}")
 
 
 class TemplateService:
@@ -58,10 +61,11 @@ class TemplateService:
     def parse_user_template(
         self, template_path: Path
     ) -> tuple[TemplateSource, TemplateManifest]:
-        section_mapping, style_mapping = self._extract_docx_hints(
+        section_mapping, style_mapping, cover_fields = self._extract_docx_hints(
             template_path,
             DEFAULT_USER_SECTIONS,
             DEFAULT_USER_STYLE_MAPPING,
+            ["学校", "学院", "专业", "题目", "作者", "学号", "指导教师", "日期"],
         )
 
         source = TemplateSource(
@@ -73,7 +77,7 @@ class TemplateService:
         manifest = TemplateManifest(
             section_mapping=section_mapping,
             style_mapping=style_mapping,
-            cover_fields=["学校", "学院", "专业", "题目", "作者", "学号", "指导教师", "日期"],
+            cover_fields=cover_fields,
             figure_slots=["图1", "图2", "图3"],
             table_slots=["表1", "表2", "表3"],
             citation_style="GB/T 7714",
@@ -98,15 +102,16 @@ class TemplateService:
         template_path: Path,
         manifest: TemplateManifest,
     ) -> TemplateManifest:
-        sections, styles = self._extract_docx_hints(
+        sections, styles, cover_fields = self._extract_docx_hints(
             template_path,
             manifest.section_mapping,
             manifest.style_mapping,
+            manifest.cover_fields,
         )
         return TemplateManifest(
             section_mapping=sections,
             style_mapping=styles,
-            cover_fields=manifest.cover_fields,
+            cover_fields=cover_fields,
             figure_slots=manifest.figure_slots,
             table_slots=manifest.table_slots,
             citation_style=manifest.citation_style,
@@ -120,9 +125,11 @@ class TemplateService:
         template_path: Path,
         fallback_sections: list[str],
         fallback_styles: dict[str, str],
-    ) -> tuple[list[str], dict[str, str]]:
+        fallback_cover_fields: list[str],
+    ) -> tuple[list[str], dict[str, str], list[str]]:
         section_mapping = list(fallback_sections)
         style_mapping = dict(fallback_styles)
+        cover_fields = list(fallback_cover_fields)
 
         try:
             from docx import Document  # type: ignore
@@ -130,11 +137,18 @@ class TemplateService:
             document = Document(str(template_path))
             headings: list[str] = []
             styles_seen: dict[str, str] = {}
-            for paragraph in document.paragraphs:
+            section_placeholders: list[str] = []
+            cover_placeholders: list[str] = []
+            for paragraph in self._iter_docx_paragraphs(document):
                 text = paragraph.text.strip()
                 style_name = getattr(paragraph.style, "name", "") or "Normal"
                 if style_name.startswith("Heading") and text:
                     headings.append(text)
+                self._collect_placeholder_names(
+                    text,
+                    section_placeholders=section_placeholders,
+                    cover_placeholders=cover_placeholders,
+                )
                 if "title" in style_name.lower():
                     styles_seen["title"] = style_name
                 elif style_name.startswith("Heading 1"):
@@ -143,10 +157,41 @@ class TemplateService:
                     styles_seen["section"] = style_name
                 elif "caption" in style_name.lower():
                     styles_seen["caption"] = style_name
-            if headings:
+            if section_placeholders:
+                section_mapping = section_placeholders[:20]
+            elif headings:
                 section_mapping = headings[:20]
+            if cover_placeholders:
+                cover_fields = cover_placeholders
             style_mapping.update(styles_seen)
         except Exception:
             pass
 
-        return section_mapping, style_mapping
+        return section_mapping, style_mapping, cover_fields
+
+    def _iter_docx_paragraphs(self, document):
+        for paragraph in document.paragraphs:
+            yield paragraph
+        for table in document.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    for paragraph in cell.paragraphs:
+                        yield paragraph
+
+    def _collect_placeholder_names(
+        self,
+        text: str,
+        *,
+        section_placeholders: list[str],
+        cover_placeholders: list[str],
+    ) -> None:
+        for match in PLACEHOLDER_PATTERN.finditer(text):
+            placeholder = match.group(1)
+            if placeholder.startswith("section."):
+                section_name = placeholder.split(".", 1)[1].strip()
+                if section_name and section_name not in section_placeholders:
+                    section_placeholders.append(section_name)
+            elif placeholder.startswith("cover."):
+                field_name = placeholder.split(".", 1)[1].strip()
+                if field_name and field_name not in cover_placeholders:
+                    cover_placeholders.append(field_name)
