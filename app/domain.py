@@ -94,6 +94,7 @@ class TemplateSource:
     template_name: str
     manifest_version: str = "1.0"
     template_path: str | None = None
+    ppt_template_path: str | None = None
 
 
 @dataclass(slots=True)

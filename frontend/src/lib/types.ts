@@ -25,6 +25,7 @@ export interface TemplateSource {
   template_name: string;
   manifest_version: string;
   template_path?: string | null;
+  ppt_template_path?: string | null;
 }
 
 export interface TemplateManifest {

@@ -1,12 +1,38 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from app.domain import ProjectCreate, TemplateManifest, TemplateSource
-from app.template_library import TEMPLATE_LIBRARY
+from app.template_library import TEMPLATE_LIBRARY, TemplateBundle
+
+
+DEFAULT_USER_SECTIONS = [
+    "封面",
+    "摘要",
+    "Abstract",
+    "目录",
+    "引言",
+    "相关工作",
+    "方法",
+    "实验",
+    "结论",
+    "参考文献",
+]
+
+DEFAULT_USER_STYLE_MAPPING = {
+    "title": "Title",
+    "chapter": "Heading 1",
+    "section": "Heading 2",
+    "body": "Normal",
+    "caption": "Caption",
+}
 
 
 class TemplateService:
+    def __init__(self, template_library: dict[str, TemplateBundle] | None = None) -> None:
+        self.template_library = template_library or TEMPLATE_LIBRARY
+
     def choose_default_template(
         self, request: ProjectCreate
     ) -> tuple[TemplateSource, TemplateManifest]:
@@ -16,31 +42,87 @@ class TemplateService:
             key = "engineering_thesis"
         else:
             key = "general_undergraduate"
-        entry = TEMPLATE_LIBRARY[key]
-        return entry["source"], entry["manifest"]
+
+        bundle = self.template_library[key]
+        manifest = self._load_manifest(bundle)
+        manifest = self._merge_word_template_hints(bundle.word_template_path, manifest)
+        source = TemplateSource(
+            source_type="library_default",
+            template_id=bundle.template_id,
+            template_name=bundle.template_name,
+            template_path=str(bundle.word_template_path),
+            ppt_template_path=str(bundle.ppt_template_path),
+        )
+        return source, manifest
 
     def parse_user_template(
         self, template_path: Path
     ) -> tuple[TemplateSource, TemplateManifest]:
-        section_mapping = [
-            "封面",
-            "摘要",
-            "Abstract",
-            "目录",
-            "引言",
-            "相关工作",
-            "方法",
-            "实验",
-            "结论",
-            "参考文献",
-        ]
-        style_mapping = {
-            "title": "Title",
-            "chapter": "Heading 1",
-            "section": "Heading 2",
-            "body": "Normal",
-            "caption": "Caption",
-        }
+        section_mapping, style_mapping = self._extract_docx_hints(
+            template_path,
+            DEFAULT_USER_SECTIONS,
+            DEFAULT_USER_STYLE_MAPPING,
+        )
+
+        source = TemplateSource(
+            source_type="user_upload",
+            template_id=template_path.stem,
+            template_name=template_path.name,
+            template_path=str(template_path),
+        )
+        manifest = TemplateManifest(
+            section_mapping=section_mapping,
+            style_mapping=style_mapping,
+            cover_fields=["学校", "学院", "专业", "题目", "作者", "学号", "指导教师", "日期"],
+            figure_slots=["图1", "图2", "图3"],
+            table_slots=["表1", "表2", "表3"],
+            citation_style="GB/T 7714",
+            header_footer_rules={"header": "按用户模板输出", "footer": "自动分页"},
+            toc_rules={"enabled": True, "depth": 3},
+            ppt_layouts=["title", "content", "chart", "summary"],
+        )
+        return source, manifest
+
+    def _load_manifest(self, bundle: TemplateBundle) -> TemplateManifest:
+        if not bundle.manifest_path.exists():
+            raise FileNotFoundError(f"Template manifest not found: {bundle.manifest_path}")
+
+        try:
+            payload = json.loads(bundle.manifest_path.read_text(encoding="utf-8"))
+            return TemplateManifest(**payload)
+        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid template manifest: {bundle.manifest_path}") from exc
+
+    def _merge_word_template_hints(
+        self,
+        template_path: Path,
+        manifest: TemplateManifest,
+    ) -> TemplateManifest:
+        sections, styles = self._extract_docx_hints(
+            template_path,
+            manifest.section_mapping,
+            manifest.style_mapping,
+        )
+        return TemplateManifest(
+            section_mapping=sections,
+            style_mapping=styles,
+            cover_fields=manifest.cover_fields,
+            figure_slots=manifest.figure_slots,
+            table_slots=manifest.table_slots,
+            citation_style=manifest.citation_style,
+            header_footer_rules=manifest.header_footer_rules,
+            toc_rules=manifest.toc_rules,
+            ppt_layouts=manifest.ppt_layouts,
+        )
+
+    def _extract_docx_hints(
+        self,
+        template_path: Path,
+        fallback_sections: list[str],
+        fallback_styles: dict[str, str],
+    ) -> tuple[list[str], dict[str, str]]:
+        section_mapping = list(fallback_sections)
+        style_mapping = dict(fallback_styles)
 
         try:
             from docx import Document  # type: ignore
@@ -65,25 +147,6 @@ class TemplateService:
                 section_mapping = headings[:20]
             style_mapping.update(styles_seen)
         except Exception:
-            # Fall back to a conservative schema when the parser cannot inspect the template.
             pass
 
-        source = TemplateSource(
-            source_type="user_upload",
-            template_id=template_path.stem,
-            template_name=template_path.name,
-            template_path=str(template_path),
-        )
-        manifest = TemplateManifest(
-            section_mapping=section_mapping,
-            style_mapping=style_mapping,
-            cover_fields=["学校", "学院", "专业", "题目", "作者", "学号", "指导教师", "日期"],
-            figure_slots=["图1", "图2", "图3"],
-            table_slots=["表1", "表2", "表3"],
-            citation_style="GB/T 7714",
-            header_footer_rules={"header": "按用户模板输出", "footer": "自动分页"},
-            toc_rules={"enabled": True, "depth": 3},
-            ppt_layouts=["title", "content", "chart", "summary"],
-        )
-        return source, manifest
-
+        return section_mapping, style_mapping

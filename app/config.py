@@ -25,6 +25,11 @@ class AppSettings:
             _env("THESIS_ASSISTANT_MODEL_SETTINGS_PATH", "workspace/model_settings.json")
         )
     )
+    template_library_dir: Path = field(
+        default_factory=lambda: Path(
+            _env("THESIS_ASSISTANT_TEMPLATE_LIBRARY_DIR", "templates/library")
+        )
+    )
     host: str = field(default_factory=lambda: _env("THESIS_ASSISTANT_HOST", "127.0.0.1"))
     port: int = field(default_factory=lambda: int(_env("THESIS_ASSISTANT_PORT", "8000")))
 
@@ -32,6 +37,7 @@ class AppSettings:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.model_settings_path.parent.mkdir(parents=True, exist_ok=True)
+        self.template_library_dir.mkdir(parents=True, exist_ok=True)
 
 
 SETTINGS = AppSettings()

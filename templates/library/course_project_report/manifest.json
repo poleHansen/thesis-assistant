@@ -1,0 +1,51 @@
+{
+  "section_mapping": [
+    "封面",
+    "摘要",
+    "1. 项目背景",
+    "2. 需求分析",
+    "3. 系统设计",
+    "4. 实验与测试",
+    "5. 总结",
+    "参考文献"
+  ],
+  "style_mapping": {
+    "title": "Title",
+    "chapter": "Heading 1",
+    "section": "Heading 2",
+    "body": "Normal"
+  },
+  "cover_fields": [
+    "课程名称",
+    "题目",
+    "作者",
+    "班级",
+    "指导教师",
+    "日期"
+  ],
+  "figure_slots": [
+    "系统流程图",
+    "功能截图",
+    "结果图"
+  ],
+  "table_slots": [
+    "需求表",
+    "测试表"
+  ],
+  "citation_style": "GB/T 7714",
+  "header_footer_rules": {
+    "header": "课程设计报告",
+    "footer": "页码右侧"
+  },
+  "toc_rules": {
+    "enabled": true,
+    "depth": 2
+  },
+  "ppt_layouts": [
+    "title",
+    "background",
+    "design",
+    "result",
+    "summary"
+  ]
+}

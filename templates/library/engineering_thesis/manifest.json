@@ -1,0 +1,64 @@
+{
+  "section_mapping": [
+    "封面",
+    "摘要",
+    "Abstract",
+    "目录",
+    "第1章 绪论",
+    "第2章 理论基础",
+    "第3章 方法设计与实现",
+    "第4章 实验结果与分析",
+    "第5章 总结与展望",
+    "参考文献",
+    "附录",
+    "致谢"
+  ],
+  "style_mapping": {
+    "title": "Title",
+    "chapter": "heading 1",
+    "section": "heading 2",
+    "subsection": "heading 3",
+    "body": "Body Text First Indent",
+    "caption": "caption",
+    "reference": "参考文献",
+    "table": "表格",
+    "code": "源代码"
+  },
+  "cover_fields": [
+    "题目",
+    "学院",
+    "专业",
+    "班级",
+    "毕业年限",
+    "学生姓名",
+    "学号",
+    "指导教师"
+  ],
+  "figure_slots": [
+    "总体架构图",
+    "方法流程图",
+    "实验结果对比图"
+  ],
+  "table_slots": [
+    "数据集与参数表",
+    "实验结果对比表",
+    "消融实验表"
+  ],
+  "citation_style": "GB/T 7714",
+  "header_footer_rules": {
+    "header": "保留模板页眉",
+    "footer": "保留模板页脚并自动更新页码"
+  },
+  "toc_rules": {
+    "enabled": true,
+    "depth": 3
+  },
+  "ppt_layouts": [
+    "title",
+    "background",
+    "method",
+    "experiment",
+    "result",
+    "summary"
+  ]
+}

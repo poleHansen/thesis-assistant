@@ -1,0 +1,57 @@
+{
+  "section_mapping": [
+    "封面",
+    "摘要",
+    "Abstract",
+    "目录",
+    "第1章 绪论",
+    "第2章 相关工作",
+    "第3章 方法设计",
+    "第4章 实验设计与结果分析",
+    "第5章 结论与展望",
+    "参考文献",
+    "致谢"
+  ],
+  "style_mapping": {
+    "title": "Title",
+    "chapter": "Heading 1",
+    "section": "Heading 2",
+    "body": "Normal",
+    "caption": "Caption"
+  },
+  "cover_fields": [
+    "学校",
+    "学院",
+    "专业",
+    "题目",
+    "作者",
+    "学号",
+    "指导教师",
+    "日期"
+  ],
+  "figure_slots": [
+    "图1",
+    "图2",
+    "图3"
+  ],
+  "table_slots": [
+    "表1",
+    "表2",
+    "表3"
+  ],
+  "citation_style": "GB/T 7714",
+  "header_footer_rules": {
+    "header": "本科毕业论文",
+    "footer": "页码居中"
+  },
+  "toc_rules": {
+    "enabled": true,
+    "depth": 3
+  },
+  "ppt_layouts": [
+    "title",
+    "content",
+    "chart",
+    "summary"
+  ]
+}
