@@ -6,7 +6,7 @@ import uuid
 from pathlib import Path
 
 from app.artifact_service import ArtifactService
-from app.domain import LiteratureRecord, ProjectCreate, ProjectState, TemplateManifest, TemplateSource
+from app.domain import InnovationCandidate, LiteratureRecord, ProjectCreate, ProjectState, TemplateManifest, TemplateSource
 from app.storage import ProjectStorage
 
 try:
@@ -147,6 +147,63 @@ class ArtifactServiceTest(unittest.TestCase):
             self.assertIn("is_fallback", text)
             self.assertIn("evidence_quote", text)
             self.assertIn("needs_review", text)
+
+    def test_innovation_report_contains_gap_evidence_and_recommendation_fields(self) -> None:
+        state = self._build_state("", "")
+        state.result_schema["gap_analysis"] = {
+            "mode": "real",
+            "common_methods": ["Transformer 编码器", "轻量分类头"],
+            "common_datasets": ["THUCNews"],
+            "common_metrics": ["Accuracy", "F1"],
+            "common_limitations": ["鲁棒性评测不足"],
+        }
+        state.result_schema["gap_analysis_overview"] = "最明显的 gap 类型是评价空白，因为主流论文主要集中在常规指标。"
+        state.result_schema["innovation_recommendation"] = {
+            "selected_reason": "评价补强方案成本低、证据强，适合直接进入实验设计。"
+        }
+        state.innovation_candidates = [
+            InnovationCandidate(
+                claim="面向中文文本分类的鲁棒性与可解释评价补强方案",
+                supporting_papers=["Paper 1", "Paper 2"],
+                contrast_papers=["Paper 3"],
+                analysis_basis=["4 篇论文主要只报告 Accuracy/F1，缺少鲁棒性评测。"],
+                supporting_evidence=["Paper 1：limitations 指向“缺少鲁棒性评测”"],
+                contrast_evidence=["Paper 3：metrics 指向“Accuracy, F1”"],
+                novelty_reason="当前工作多关注常规精度指标。",
+                feasibility_score=8.2,
+                risk="指标设计不清晰会削弱说服力。",
+                verification_plan="补充鲁棒性测试与错误案例分析。",
+                gap_type="evaluation_gap",
+                rare_reason="评价维度扩展往往未被当作主要贡献展开。",
+                recommendation_reason="成本低、适合本科毕业论文且证据较强。",
+                novelty_score=7.5,
+                risk_score=4.5,
+                experiment_cost=3.5,
+                undergrad_fit=8.8,
+                evidence_strength=8.0,
+                evidence_mode="real",
+                overall_score=8.01,
+            )
+        ]
+        state.selected_innovation = state.innovation_candidates[0]
+
+        result = self.service.render_all(state)
+
+        report_path = Path(result.artifacts.innovation_report or "")
+        self.assertTrue(report_path.exists())
+        report = report_path.read_text(encoding="utf-8")
+        self.assertIn("创新点分析报告", report)
+        self.assertIn("gap 类型", report)
+        self.assertIn("支撑文献", report)
+        self.assertIn("少见原因", report)
+        self.assertIn("推荐理由", report)
+        self.assertIn("证据模式", report)
+        self.assertIn("最明显 gap", report)
+        self.assertIn("证据链解释", report)
+        self.assertIn("复核建议", report)
+        self.assertIn("分析依据", report)
+        self.assertIn("支撑证据", report)
+        self.assertIn("对照依据", report)
 
     def _build_state(self, word_template_path: str, ppt_template_path: str) -> ProjectState:
         state = ProjectState(

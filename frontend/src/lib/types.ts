@@ -88,10 +88,23 @@ export interface RetrievalSummary {
 
 export interface InnovationCandidate {
   claim: string;
+  gap_type: string;
   supporting_papers: string[];
   contrast_papers: string[];
+  analysis_basis: string[];
+  supporting_evidence: string[];
+  contrast_evidence: string[];
   novelty_reason: string;
+  rare_reason: string;
+  recommendation_reason: string;
+  novelty_score: number;
   feasibility_score: number;
+  risk_score: number;
+  experiment_cost: number;
+  undergrad_fit: number;
+  evidence_strength: number;
+  evidence_mode: "real" | "fallback";
+  overall_score: number;
   risk: string;
   verification_plan: string;
 }

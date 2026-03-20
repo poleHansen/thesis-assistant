@@ -165,22 +165,34 @@ class ProjectRepository:
         kwargs["template_source"] = template_source
         kwargs["template_manifest"] = template_manifest
         kwargs["literature_records"] = [
-            LiteratureRecord(**item) for item in state_data.get("literature_records", [])
+            LiteratureRecord(**self._filter_dataclass_kwargs(LiteratureRecord, item))
+            for item in state_data.get("literature_records", [])
         ]
         kwargs["innovation_candidates"] = [
-            InnovationCandidate(**item)
+            InnovationCandidate(**self._filter_dataclass_kwargs(InnovationCandidate, item))
             for item in state_data.get("innovation_candidates", [])
         ]
         kwargs["selected_innovation"] = (
-            InnovationCandidate(**state_data["selected_innovation"])
+            InnovationCandidate(
+                **self._filter_dataclass_kwargs(InnovationCandidate, state_data["selected_innovation"])
+            )
             if state_data.get("selected_innovation")
             else None
         )
         kwargs["experiment_plan"] = (
-            ExperimentPlan(**state_data["experiment_plan"])
+            ExperimentPlan(**self._filter_dataclass_kwargs(ExperimentPlan, state_data["experiment_plan"]))
             if state_data.get("experiment_plan")
             else None
         )
-        kwargs["retrieval_summary"] = RetrievalSummary(**state_data.get("retrieval_summary", {}))
-        kwargs["artifacts"] = ArtifactBundle(**state_data.get("artifacts", {}))
+        kwargs["retrieval_summary"] = RetrievalSummary(
+            **self._filter_dataclass_kwargs(RetrievalSummary, state_data.get("retrieval_summary", {}))
+        )
+        kwargs["artifacts"] = ArtifactBundle(
+            **self._filter_dataclass_kwargs(ArtifactBundle, state_data.get("artifacts", {}))
+        )
         return ProjectState(**kwargs)
+
+    def _filter_dataclass_kwargs(self, model_cls: type, payload: dict | None) -> dict:
+        payload = payload or {}
+        allowed = {field.name for field in fields(model_cls)}
+        return {key: value for key, value in payload.items() if key in allowed}

@@ -153,6 +153,23 @@ export function ProjectDetailPage() {
                 innovations={project.innovation_candidates}
                 selectedClaim={project.selected_innovation?.claim}
               />
+              <section className="panel glass-card">
+                <div className="panel__header">
+                  <div>
+                    <p className="eyebrow">Innovation Evidence</p>
+                    <h3>创新点证据说明</h3>
+                  </div>
+                </div>
+                <p className="muted">
+                  当前候选创新点会标注 real / fallback。real 表示基于结构化文献差异分析生成，fallback 表示证据不足时的占位推荐，建议人工复核。
+                </p>
+                <p className="muted">
+                  若推荐项显示为 fallback，优先补充文献后再进入实验设计；若显示为 real，可直接进入实验设计并继续完善对照实验。
+                </p>
+                <p className="muted">
+                  卡片中的“分析依据 / 支撑证据 / 对照依据”来自结构化文献字段摘要；若为 fallback，这些区域可能为空。
+                </p>
+              </section>
               <ExperimentSummary plan={project.experiment_plan} />
               <section className="panel glass-card">
                 <div className="panel__header">

@@ -9,6 +9,8 @@ TemplateSourceType = Literal["user_upload", "library_default"]
 EvidenceSourceType = Literal["abstract", "pdf", "manual", "fallback"]
 PdfParseStatus = Literal["not_applicable", "success", "degraded", "failed"]
 RetrievalStatus = Literal["success", "partial", "fallback"]
+GapType = Literal["method_gap", "data_gap", "scenario_gap", "evaluation_gap"]
+InnovationEvidenceMode = Literal["real", "fallback"]
 MODEL_TASK_TYPES = (
     "planner",
     "reviewer",
@@ -160,6 +162,19 @@ class InnovationCandidate:
     feasibility_score: float
     risk: str
     verification_plan: str
+    analysis_basis: list[str] = field(default_factory=list)
+    supporting_evidence: list[str] = field(default_factory=list)
+    contrast_evidence: list[str] = field(default_factory=list)
+    gap_type: GapType = "method_gap"
+    rare_reason: str = ""
+    recommendation_reason: str = ""
+    novelty_score: float = 0.0
+    risk_score: float = 0.0
+    experiment_cost: float = 0.0
+    undergrad_fit: float = 0.0
+    evidence_strength: float = 0.0
+    evidence_mode: InnovationEvidenceMode = "fallback"
+    overall_score: float = 0.0
 
 
 @dataclass(slots=True)

@@ -6,9 +6,15 @@ import shutil
 from types import SimpleNamespace
 import uuid
 
-from app.agents import ReaderAgent, RetrieverAgent, TopicPlannerAgent
-from app.domain import ProjectCreate, ProjectState
-from app.domain import LiteratureRecord
+from app.agents import (
+    FeasibilityReviewerAgent,
+    GapAnalystAgent,
+    NoveltyJudgeAgent,
+    ReaderAgent,
+    RetrieverAgent,
+    TopicPlannerAgent,
+)
+from app.domain import InnovationCandidate, LiteratureRecord, ProjectCreate, ProjectState
 from app.model_gateway import ModelGateway
 from app.model_settings import ModelSettingsStore
 from app.repository import ProjectRepository
@@ -82,8 +88,192 @@ class WorkflowTest(unittest.TestCase):
             self.assertTrue(all("needs_review" in row for row in result.survey_table))
             self.assertTrue(all(record.retrieval_rank >= 1 for record in result.literature_records))
             self.assertIn(result.retrieval_summary.retrieval_status, {"success", "partial", "fallback"})
+            self.assertGreaterEqual(len(result.innovation_candidates), 3)
+            self.assertTrue(all(item.supporting_papers for item in result.innovation_candidates))
+            self.assertTrue(all(item.contrast_papers for item in result.innovation_candidates))
+            self.assertTrue(all(item.gap_type for item in result.innovation_candidates))
+            self.assertTrue(result.selected_innovation)
+            self.assertTrue(result.selected_innovation.recommendation_reason)
+            self.assertIn(result.selected_innovation.evidence_mode, {"real", "fallback"})
+            self.assertTrue(result.artifacts.innovation_report)
         finally:
             shutil.rmtree(root, ignore_errors=True)
+
+    def test_gap_analyst_generates_gap_typed_candidates_with_evidence(self) -> None:
+        records = [
+            LiteratureRecord(
+                source="semantic_scholar",
+                title=f"Paper {index}",
+                authors="Tester",
+                year=2025,
+                abstract="Abstract",
+                doi_or_url=f"https://example.com/{index}",
+                problem="中文文本分类",
+                method="Transformer 编码器, 轻量分类头" if index < 3 else "CNN 编码器, 注意力层",
+                dataset="THUCNews, Fudan" if index % 2 else "THUCNews",
+                metrics="Accuracy, F1",
+                conclusion="方法有效",
+                limitations="缺少鲁棒性评测, 缺少低资源场景验证",
+                confidence_score=0.8,
+            )
+            for index in range(1, 6)
+        ]
+        state = ProjectState(
+            project_id="project-gap-analysis",
+            request=ProjectCreate(topic="中文文本分类算法"),
+            literature_records=records,
+        )
+
+        result = GapAnalystAgent(ModelGateway(ModelSettingsStore.default_settings())).run(state)
+
+        self.assertGreaterEqual(len(result.innovation_candidates), 3)
+        self.assertTrue(all(candidate.supporting_papers for candidate in result.innovation_candidates))
+        self.assertTrue(all(candidate.contrast_papers for candidate in result.innovation_candidates))
+        self.assertTrue(all(candidate.gap_type for candidate in result.innovation_candidates))
+        self.assertTrue(all(candidate.evidence_mode == "real" for candidate in result.innovation_candidates))
+        self.assertTrue(all(candidate.analysis_basis for candidate in result.innovation_candidates))
+        self.assertTrue(all(candidate.supporting_evidence for candidate in result.innovation_candidates))
+        self.assertIn("gap_analysis", result.result_schema)
+        self.assertTrue(result.result_schema.get("gap_analysis_overview"))
+
+    def test_gap_analyst_falls_back_when_structured_evidence_is_insufficient(self) -> None:
+        state = ProjectState(
+            project_id="project-gap-fallback",
+            request=ProjectCreate(topic="中文文本分类算法"),
+            literature_records=[
+                LiteratureRecord(
+                    source="fallback",
+                    title="Fallback Paper",
+                    authors="Tester",
+                    year=2025,
+                    abstract="Abstract",
+                    doi_or_url="https://example.com/fallback",
+                    problem="中文文本分类",
+                    method="Transformer",
+                    dataset="THUCNews",
+                    metrics="Accuracy",
+                    conclusion="需要进一步验证",
+                    limitations="信息不足",
+                    is_fallback=True,
+                    confidence_score=0.2,
+                )
+            ],
+        )
+
+        result = GapAnalystAgent(ModelGateway(ModelSettingsStore.default_settings())).run(state)
+
+        self.assertGreaterEqual(len(result.innovation_candidates), 3)
+        self.assertTrue(all(candidate.evidence_mode == "fallback" for candidate in result.innovation_candidates))
+        self.assertTrue(all(not candidate.analysis_basis for candidate in result.innovation_candidates))
+        self.assertEqual(result.result_schema.get("gap_analysis", {}).get("mode"), "fallback")
+
+    def test_novelty_judge_uses_multidimensional_scores_not_only_feasibility(self) -> None:
+        state = ProjectState(
+            project_id="project-ranking",
+            request=ProjectCreate(topic="中文文本分类算法"),
+            innovation_candidates=[
+                InnovationCandidate(
+                    claim="候选 A",
+                    supporting_papers=["Paper 1", "Paper 2"],
+                    contrast_papers=["Paper 3"],
+                    novelty_reason="新颖性高",
+                    feasibility_score=7.0,
+                    risk="中等风险",
+                    verification_plan="做对照实验",
+                    gap_type="method_gap",
+                    novelty_score=9.0,
+                    risk_score=4.0,
+                    experiment_cost=4.0,
+                    undergrad_fit=8.5,
+                    evidence_strength=8.5,
+                    evidence_mode="real",
+                ),
+                InnovationCandidate(
+                    claim="候选 B",
+                    supporting_papers=["Paper 1"],
+                    contrast_papers=["Paper 4"],
+                    novelty_reason="可行性高",
+                    feasibility_score=9.5,
+                    risk="风险较高",
+                    verification_plan="直接训练",
+                    gap_type="data_gap",
+                    novelty_score=5.5,
+                    risk_score=7.0,
+                    experiment_cost=7.5,
+                    undergrad_fit=5.5,
+                    evidence_strength=4.5,
+                    evidence_mode="fallback",
+                ),
+            ],
+        )
+
+        judged = NoveltyJudgeAgent(ModelGateway(ModelSettingsStore.default_settings())).run(state)
+
+        self.assertEqual(judged.selected_innovation.claim, "候选 A")
+        self.assertGreater(judged.innovation_candidates[0].overall_score, judged.innovation_candidates[1].overall_score)
+        self.assertTrue(judged.selected_innovation.recommendation_reason)
+
+    def test_feasibility_reviewer_warns_for_fallback_and_low_evidence(self) -> None:
+        state = ProjectState(
+            project_id="project-feasibility-review",
+            request=ProjectCreate(topic="中文文本分类算法"),
+            innovation_candidates=[
+                InnovationCandidate(
+                    claim="候选 C",
+                    supporting_papers=["Paper 1"],
+                    contrast_papers=["Paper 2"],
+                    novelty_reason="占位推荐",
+                    feasibility_score=6.5,
+                    risk="风险较高",
+                    verification_plan="补实验",
+                    gap_type="evaluation_gap",
+                    novelty_score=6.0,
+                    risk_score=8.0,
+                    experiment_cost=6.0,
+                    undergrad_fit=5.0,
+                    evidence_strength=4.0,
+                    evidence_mode="fallback",
+                ),
+                InnovationCandidate(
+                    claim="候选 D",
+                    supporting_papers=["Paper 3", "Paper 4"],
+                    contrast_papers=["Paper 5"],
+                    novelty_reason="真实推荐",
+                    feasibility_score=7.8,
+                    risk="低风险",
+                    verification_plan="补对照实验",
+                    gap_type="method_gap",
+                    novelty_score=7.5,
+                    risk_score=4.5,
+                    experiment_cost=5.0,
+                    undergrad_fit=7.0,
+                    evidence_strength=6.8,
+                    evidence_mode="real",
+                ),
+            ],
+            selected_innovation=InnovationCandidate(
+                claim="候选 C",
+                supporting_papers=["Paper 1"],
+                contrast_papers=["Paper 2"],
+                novelty_reason="占位推荐",
+                feasibility_score=6.5,
+                risk="风险较高",
+                verification_plan="补实验",
+                gap_type="evaluation_gap",
+                novelty_score=6.0,
+                risk_score=8.0,
+                experiment_cost=6.0,
+                undergrad_fit=5.0,
+                evidence_strength=4.0,
+                evidence_mode="fallback",
+            ),
+        )
+
+        reviewed = FeasibilityReviewerAgent(ModelGateway(ModelSettingsStore.default_settings())).run(state)
+
+        self.assertGreaterEqual(len(reviewed.warnings), 3)
+        self.assertTrue(any("fallback" in warning for warning in reviewed.warnings))
+        self.assertTrue(any("第二候选" in warning for warning in reviewed.warnings))
 
     def test_reader_agent_merges_llm_structured_fields(self) -> None:
         class DummyGateway:

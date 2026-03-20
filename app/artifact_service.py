@@ -147,16 +147,74 @@ class ArtifactService:
             return str(path)
 
     def _innovation_report(self, state: ProjectState) -> str:
-        lines = ["# 创新点候选清单", ""]
+        selected = state.selected_innovation
+        summary = state.result_schema.get("gap_analysis", {}) if isinstance(state.result_schema, dict) else {}
+        recommendation = (
+            state.result_schema.get("innovation_recommendation", {}) if isinstance(state.result_schema, dict) else {}
+        )
+        mode = (
+            summary.get("mode", selected.evidence_mode if selected else "fallback")
+            if isinstance(summary, dict)
+            else "fallback"
+        )
+        common_methods = "、".join(summary.get("common_methods", [])[:3]) if isinstance(summary, dict) else ""
+        common_datasets = "、".join(summary.get("common_datasets", [])[:3]) if isinstance(summary, dict) else ""
+        common_metrics = "、".join(summary.get("common_metrics", [])[:3]) if isinstance(summary, dict) else ""
+        common_limitations = "、".join(summary.get("common_limitations", [])[:3]) if isinstance(summary, dict) else ""
+        gap_overview = str(state.result_schema.get("gap_analysis_overview", "")).strip()
+        selected_reason = recommendation.get("selected_reason", selected.recommendation_reason if selected else "")
+        lines = [
+            "# 创新点分析报告",
+            "",
+            "## 总体结论",
+            f"- 分析模式：{mode}",
+            f"- 候选数量：{len(state.innovation_candidates)}",
+            f"- 推荐方案：{selected.claim if selected else '尚未生成'}",
+            f"- 推荐理由：{selected_reason or '待生成'}",
+            f"- 主流方法共性：{common_methods or '待补充'}",
+            f"- 主流数据共性：{common_datasets or '待补充'}",
+            f"- 主流评测共性：{common_metrics or '待补充'}",
+            f"- 常见局限：{common_limitations or '待补充'}",
+            f"- 最明显 gap：{gap_overview or '待补充'}",
+            (
+                "- 审核提示：当前结果含 fallback 占位推荐，建议补充文献后再确认最终创新点。"
+                if mode == "fallback" or any(item.evidence_mode == "fallback" for item in state.innovation_candidates)
+                else "- 审核提示：当前候选主要基于真实结构化文献差异分析生成。"
+            ),
+            "",
+        ]
         for idx, item in enumerate(state.innovation_candidates, start=1):
+            analysis_basis = "；".join(item.analysis_basis) or "无"
+            supporting_evidence = "；".join(item.supporting_evidence) or "无"
+            contrast_evidence = "；".join(item.contrast_evidence) or "无"
             lines.extend(
                 [
                     f"## 候选 {idx}",
-                    f"- 方案：{item.claim}",
+                    f"- 创新点描述：{item.claim}",
+                    f"- gap 类型：{item.gap_type}",
+                    f"- 支撑文献：{'；'.join(item.supporting_papers) or '无'}",
+                    f"- 对照文献：{'；'.join(item.contrast_papers) or '无'}",
+                    f"- 分析依据：{analysis_basis}",
+                    f"- 支撑证据：{supporting_evidence}",
+                    f"- 对照依据：{contrast_evidence}",
                     f"- 创新性说明：{item.novelty_reason}",
-                    f"- 可行性评分：{item.feasibility_score}",
+                    f"- 少见原因：{item.rare_reason}",
+                    f"- 推荐理由：{item.recommendation_reason or '待排序阶段生成'}",
+                    f"- 证据链解释：优先展示结构化文献中的 limitations / metrics / dataset / problem 摘要，以说明为何判断为该 gap。",
+                    (
+                        f"- 多维评分：overall={item.overall_score:.2f} / novelty={item.novelty_score:.1f} / "
+                        f"feasibility={item.feasibility_score:.1f} / risk={item.risk_score:.1f} / "
+                        f"cost={item.experiment_cost:.1f} / undergrad_fit={item.undergrad_fit:.1f} / "
+                        f"evidence={item.evidence_strength:.1f}"
+                    ),
                     f"- 风险：{item.risk}",
                     f"- 验证计划：{item.verification_plan}",
+                    f"- 证据模式：{item.evidence_mode}",
+                    (
+                        "- 复核建议：该候选为 fallback 占位推荐，进入实验设计前应先补充更多结构化文献证据。"
+                        if item.evidence_mode == "fallback"
+                        else "- 复核建议：该候选已具备 real 证据，可直接进入实验设计并继续补强实验细节。"
+                    ),
                     "",
                 ]
             )
