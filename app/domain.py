@@ -5,6 +5,19 @@ from typing import Any, Literal
 
 
 ProjectStatus = Literal["created", "running", "completed", "failed"]
+WorkflowPhase = Literal[
+    "intake",
+    "planning",
+    "research",
+    "implementation",
+    "writing_delivery",
+    "review",
+    "completed",
+]
+WorkflowNodeStatus = Literal["pending", "running", "succeeded", "failed", "skipped", "rolled_back"]
+WorkflowOutcome = Literal["not_started", "success", "partial_success", "rollback_success", "failed"]
+FailureCategory = Literal["transient", "validation", "consistency", "rendering", "unknown"]
+AuditEventLevel = Literal["info", "warning", "error"]
 TemplateSourceType = Literal["user_upload", "library_default"]
 EvidenceSourceType = Literal["abstract", "pdf", "manual", "fallback"]
 PdfParseStatus = Literal["not_applicable", "success", "degraded", "failed"]
@@ -211,10 +224,64 @@ class ArtifactBundle:
 
 
 @dataclass(slots=True)
+class WorkflowNodeRun:
+    node_name: str
+    phase: WorkflowPhase
+    status: WorkflowNodeStatus = "pending"
+    attempt: int = 0
+    started_at: str = ""
+    ended_at: str = ""
+    provider: str = ""
+    model: str = ""
+    fallback_used: bool = False
+    message: str = ""
+    error_category: FailureCategory = "unknown"
+    error_detail: str = ""
+
+
+@dataclass(slots=True)
+class AuditEvent:
+    timestamp: str
+    level: AuditEventLevel
+    phase: WorkflowPhase
+    node_name: str
+    message: str
+    attempt: int = 0
+    provider: str = ""
+    model: str = ""
+    fallback_used: bool = False
+
+
+@dataclass(slots=True)
+class WorkflowCheckpoint:
+    checkpoint_id: str
+    phase: WorkflowPhase
+    node_name: str
+    created_at: str
+    summary: str = ""
+
+
+@dataclass(slots=True)
+class RollbackRecord:
+    from_phase: WorkflowPhase
+    to_phase: WorkflowPhase
+    reason: str
+    trigger_node: str
+    created_at: str
+    recovered: bool = False
+
+
+@dataclass(slots=True)
 class ProjectState:
     project_id: str
     request: ProjectCreate
     status: ProjectStatus = "created"
+    workflow_phase: WorkflowPhase = "intake"
+    workflow_outcome: WorkflowOutcome = "not_started"
+    current_node: str = ""
+    active_run_id: str = ""
+    last_error: str = ""
+    last_failure_category: FailureCategory = "unknown"
     template_source: TemplateSource | None = None
     template_manifest: TemplateManifest | None = None
     uploaded_pdf_paths: list[str] = field(default_factory=list)
@@ -235,3 +302,7 @@ class ProjectState:
     warnings: list[str] = field(default_factory=list)
     artifacts: ArtifactBundle = field(default_factory=ArtifactBundle)
     execution_log: list[str] = field(default_factory=list)
+    node_runs: dict[str, WorkflowNodeRun] = field(default_factory=dict)
+    audit_trail: list[AuditEvent] = field(default_factory=list)
+    checkpoints: list[WorkflowCheckpoint] = field(default_factory=list)
+    rollback_history: list[RollbackRecord] = field(default_factory=list)

@@ -7,8 +7,10 @@ from pathlib import Path
 
 from app.config import SETTINGS
 from app.domain import (
+    AuditEvent,
     ArtifactBundle,
     ExperimentPlan,
+    RollbackRecord,
     InnovationCandidate,
     LiteratureRecord,
     ProjectCreate,
@@ -16,6 +18,8 @@ from app.domain import (
     RetrievalSummary,
     TemplateManifest,
     TemplateSource,
+    WorkflowCheckpoint,
+    WorkflowNodeRun,
 )
 from app.utils import dumps_json, loads_json, utcnow_iso
 
@@ -190,6 +194,26 @@ class ProjectRepository:
         kwargs["artifacts"] = ArtifactBundle(
             **self._filter_dataclass_kwargs(ArtifactBundle, state_data.get("artifacts", {}))
         )
+        kwargs["node_runs"] = {
+            str(key): WorkflowNodeRun(**self._filter_dataclass_kwargs(WorkflowNodeRun, value))
+            for key, value in dict(state_data.get("node_runs", {})).items()
+            if isinstance(value, dict)
+        }
+        kwargs["audit_trail"] = [
+            AuditEvent(**self._filter_dataclass_kwargs(AuditEvent, item))
+            for item in state_data.get("audit_trail", [])
+            if isinstance(item, dict)
+        ]
+        kwargs["checkpoints"] = [
+            WorkflowCheckpoint(**self._filter_dataclass_kwargs(WorkflowCheckpoint, item))
+            for item in state_data.get("checkpoints", [])
+            if isinstance(item, dict)
+        ]
+        kwargs["rollback_history"] = [
+            RollbackRecord(**self._filter_dataclass_kwargs(RollbackRecord, item))
+            for item in state_data.get("rollback_history", [])
+            if isinstance(item, dict)
+        ]
         return ProjectState(**kwargs)
 
     def _filter_dataclass_kwargs(self, model_cls: type, payload: dict | None) -> dict:

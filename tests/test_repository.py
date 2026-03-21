@@ -107,6 +107,79 @@ class RepositoryTest(unittest.TestCase):
         self.assertEqual(loaded.innovation_candidates[0].gap_type, "method_gap")
         self.assertEqual(loaded.innovation_candidates[0].analysis_basis, [])
 
+    def test_get_preserves_workflow_audit_fields(self) -> None:
+        state = ProjectState(
+            project_id="project-004",
+            request=ProjectCreate(topic="中文文本分类算法"),
+            workflow_phase="review",
+            workflow_outcome="rollback_success",
+            current_node="consistency_checker",
+            active_run_id="2026-03-21T12:00:00+00:00",
+            last_error="",
+            last_failure_category="consistency",
+            node_runs={
+                "consistency_checker": {
+                    "node_name": "consistency_checker",
+                    "phase": "review",
+                    "status": "succeeded",
+                    "attempt": 2,
+                    "started_at": "2026-03-21T12:00:00+00:00",
+                    "ended_at": "2026-03-21T12:00:02+00:00",
+                    "provider": "",
+                    "model": "",
+                    "fallback_used": False,
+                    "message": "completed",
+                    "error_category": "consistency",
+                    "error_detail": "",
+                }
+            },
+            audit_trail=[
+                {
+                    "timestamp": "2026-03-21T12:00:00+00:00",
+                    "level": "warning",
+                    "phase": "review",
+                    "node_name": "consistency_checker",
+                    "message": "rollback requested",
+                    "attempt": 1,
+                    "provider": "",
+                    "model": "",
+                    "fallback_used": False,
+                }
+            ],
+            checkpoints=[
+                {
+                    "checkpoint_id": "review-1",
+                    "phase": "review",
+                    "node_name": "reviewer",
+                    "created_at": "2026-03-21T12:00:03+00:00",
+                    "summary": "phase review completed",
+                }
+            ],
+            rollback_history=[
+                {
+                    "from_phase": "review",
+                    "to_phase": "writing_delivery",
+                    "reason": "Review layer detected unresolved consistency issues",
+                    "trigger_node": "consistency_checker",
+                    "created_at": "2026-03-21T12:00:01+00:00",
+                    "recovered": True,
+                }
+            ],
+        )
+        self.repository.create(state)
+
+        loaded = self.repository.get("project-004")
+
+        self.assertIsNotNone(loaded)
+        self.assertEqual(loaded.workflow_phase, "review")
+        self.assertEqual(loaded.workflow_outcome, "rollback_success")
+        self.assertEqual(loaded.current_node, "consistency_checker")
+        self.assertIn("consistency_checker", loaded.node_runs)
+        self.assertEqual(loaded.node_runs["consistency_checker"].attempt, 2)
+        self.assertEqual(len(loaded.audit_trail), 1)
+        self.assertEqual(len(loaded.checkpoints), 1)
+        self.assertEqual(len(loaded.rollback_history), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

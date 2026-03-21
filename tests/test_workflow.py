@@ -107,6 +107,48 @@ class WorkflowTest(unittest.TestCase):
             self.assertTrue(result.selected_innovation.recommendation_reason)
             self.assertIn(result.selected_innovation.evidence_mode, {"real", "fallback"})
             self.assertTrue(result.artifacts.innovation_report)
+            self.assertTrue(result.audit_trail)
+            self.assertTrue(result.checkpoints)
+            self.assertIn(result.workflow_outcome, {"success", "partial_success", "rollback_success"})
+            self.assertEqual(result.workflow_phase, "completed")
+            self.assertIn("consistency_summary", result.result_schema)
+            self.assertIn("findings", result.result_schema["consistency_summary"])
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_supervisor_records_rollback_when_review_has_blockers(self) -> None:
+        class RollbackSupervisor(LangGraphSupervisor):
+            def __init__(self, repository, storage, gateway, template_service) -> None:
+                super().__init__(repository, storage, gateway, template_service)
+                self._review_probe_count = 0
+
+            def _review_has_blockers(self, state: ProjectState) -> bool:
+                self._review_probe_count += 1
+                if self._review_probe_count == 1:
+                    return True
+                return False
+
+        root = Path("tests_runtime") / f"workflow-rollback-{uuid.uuid4().hex[:8]}"
+        root.mkdir(parents=True, exist_ok=True)
+        try:
+            repository = ProjectRepository(root / "test.db")
+            storage = ProjectStorage(root / "projects")
+            gateway = ModelGateway(ModelSettingsStore.default_settings())
+            template_service = TemplateService()
+            supervisor = RollbackSupervisor(repository, storage, gateway, template_service)
+
+            state = ProjectState(
+                project_id="project-rollback-001",
+                request=ProjectCreate(topic="中文文本分类算法"),
+            )
+            repository.create(state)
+
+            result = supervisor.run(state)
+
+            self.assertTrue(result.rollback_history)
+            self.assertTrue(any(item.to_phase == "writing_delivery" for item in result.rollback_history))
+            self.assertTrue(any(event.level in {"warning", "error"} for event in result.audit_trail))
+            self.assertIn(result.workflow_outcome, {"partial_success", "rollback_success"})
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
@@ -183,6 +225,26 @@ class WorkflowTest(unittest.TestCase):
         self.assertTrue(summary.get("evaluation_gaps"))
         self.assertTrue(summary.get("support_evidence_map", {}).get("methods"))
         self.assertTrue(summary.get("contrast_evidence_map", {}).get("metrics"))
+
+    def test_consistency_checker_builds_structured_findings(self) -> None:
+        state = ProjectState(
+            project_id="project-consistency-findings",
+            request=ProjectCreate(topic="中文文本分类算法"),
+        )
+        state.experiment_plan = ExperimentDesignerAgent(ModelGateway(ModelSettingsStore.default_settings())).run(state).experiment_plan
+        state.generated_code_files["README.md"] = "# Demo\n"
+        state.generated_code_files["configs/default.yaml"] = "seed: 42\nresult_dir: results\n"
+        state.result_schema["procedure_document"] = "实验目的\n"
+        state.paper_sections = {"实验": "实验部分待补充", "参考文献": ""}
+        state.ppt_outline = ["封面", "方法设计"]
+        state.result_schema["ppt_section_mapping"] = {"方法设计": "方法章节"}
+
+        result = ConsistencyCheckerAgent(ModelGateway(ModelSettingsStore.default_settings())).run(state)
+        summary = result.result_schema["consistency_summary"]
+
+        self.assertTrue(summary.get("findings"))
+        self.assertGreater(summary.get("blocking_count", 0), 0)
+        self.assertTrue(any(not item["aligned"] for item in summary["findings"]))
 
     def test_estimate_candidate_scores_prefers_real_evidence_over_fallback(self) -> None:
         support_records = [
@@ -431,8 +493,35 @@ class WorkflowTest(unittest.TestCase):
         checks = summary.get("checks", [])
         self.assertTrue(summary.get("plan_config_aligned"))
         self.assertTrue(summary.get("ppt_mapping_aligned"))
-        self.assertEqual(len(checks), 5)
+        self.assertEqual(len(checks), 7)
         self.assertTrue(all("label" in item and "detail" in item for item in checks))
+        self.assertIn("findings", summary)
+        self.assertEqual(summary.get("total_checks"), 7)
+        first_finding = summary.get("findings", [])[0]
+        self.assertIn("diffs", first_finding)
+        self.assertIn("locations", first_finding)
+
+    def test_consistency_summary_exposes_field_level_diffs(self) -> None:
+        gateway = ModelGateway(ModelSettingsStore.default_settings())
+        state = ProjectState(
+            project_id="project-consistency-diffs",
+            request=ProjectCreate(topic="中文文本分类算法"),
+        )
+        state = ExperimentDesignerAgent(gateway).run(state)
+        state.generated_code_files["README.md"] = "# Demo\n- python train.py --config configs/default.yaml\n"
+        state.generated_code_files["configs/default.yaml"] = "seed: 42\nresult_dir: results\n"
+        state.result_schema["procedure_document"] = "实验目的\n- python train.py --config configs/default.yaml\n"
+        state.paper_sections = {"实验": "仅包含实验摘要", "参考文献": ""}
+        state.ppt_outline = ["封面", "方法设计"]
+        state.result_schema["ppt_section_mapping"] = {"方法设计": "方法章节"}
+
+        reviewed = ConsistencyCheckerAgent(gateway).run(state)
+        summary = reviewed.result_schema.get("consistency_summary", {})
+        blocking = [item for item in summary.get("findings", []) if item.get("blocking")]
+
+        self.assertTrue(blocking)
+        self.assertTrue(any(item.get("diffs") for item in blocking))
+        self.assertTrue(any(item.get("locations") for item in blocking))
 
     def test_section_writer_reuses_structured_result_content_in_experiment_section(self) -> None:
         gateway = ModelGateway(ModelSettingsStore.default_settings())

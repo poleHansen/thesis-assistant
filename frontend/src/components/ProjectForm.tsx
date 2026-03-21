@@ -14,6 +14,7 @@ const initialState: ProjectCreate = {
   need_code: true,
   need_ppt: true,
   school_requirements: "",
+  delivery_mode: "draft",
 };
 
 export function ProjectForm({ onSubmit, loading }: ProjectFormProps) {

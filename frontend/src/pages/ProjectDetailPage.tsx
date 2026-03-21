@@ -7,7 +7,7 @@ import { ExperimentSummary } from "../components/ExperimentSummary";
 import { InnovationList } from "../components/InnovationList";
 import { RunStatusCard } from "../components/RunStatusCard";
 import { UploadDropzone } from "../components/UploadDropzone";
-import { getProject, runProject, uploadProjectFile } from "../lib/api";
+import { getProject, getProjectWorkflow, runProject, uploadProjectFile } from "../lib/api";
 import { templateSourceText } from "../lib/format";
 import type { UploadKind } from "../lib/types";
 
@@ -38,7 +38,16 @@ export function ProjectDetailPage() {
     },
   });
 
+  const workflowQuery = useQuery({
+    queryKey: ["project-workflow", projectId],
+    queryFn: () => getProjectWorkflow(projectId),
+    enabled: Boolean(projectId),
+    refetchInterval: (query) =>
+      query.state.data?.status === "running" ? 3000 : false,
+  });
+
   const project = projectQuery.data;
+  const workflow = workflowQuery.data;
   const templateSource = useMemo(() => {
     if (!project?.template_source) return "未选择模板";
     return templateSourceText[project.template_source.source_type];
@@ -151,6 +160,11 @@ export function ProjectDetailPage() {
               <ExecutionTimeline
                 logs={project.execution_log}
                 warnings={project.warnings}
+                auditTrail={workflow?.audit_trail ?? project.audit_trail}
+                rollbackHistory={workflow?.rollback_history ?? project.rollback_history}
+                nodeRuns={workflow?.node_runs ?? project.node_runs}
+                checkpoints={workflow?.checkpoints ?? project.checkpoints}
+                blockingFindings={workflow?.blocking_findings ?? project.result_schema.consistency_summary?.findings?.filter((item) => item.blocking) ?? []}
               />
             </div>
 
@@ -232,6 +246,14 @@ export function ProjectDetailPage() {
                     <strong>一致性检查</strong>
                     {project.result_schema.consistency_summary ? (
                       <div className="stack-list">
+                        <div className="paper-card__meta-row">
+                          <span className="paper-card__badge">
+                            已对齐 {project.result_schema.consistency_summary.aligned_count ?? 0}/{project.result_schema.consistency_summary.total_checks ?? 0}
+                          </span>
+                          <span className={`paper-card__badge ${(project.result_schema.consistency_summary.blocking_count ?? 0) > 0 ? "paper-card__badge--warning" : ""}`}>
+                            阻塞项 {project.result_schema.consistency_summary.blocking_count ?? 0}
+                          </span>
+                        </div>
                         {consistencyChecks.length > 0 ? (
                           <div className="consistency-grid">
                             {consistencyChecks.map((check) => (
@@ -243,6 +265,40 @@ export function ProjectDetailPage() {
                                   <strong>{check.label}</strong>
                                 </div>
                                 <small>{check.detail}</small>
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
+                        {project.result_schema.consistency_summary.findings?.length ? (
+                          <div className="stack-list">
+                            {project.result_schema.consistency_summary.findings.map((item) => (
+                              <div key={`${item.key}-${item.source}-${item.target}`} className="result-block">
+                                <div className="paper-card__meta-row">
+                                  <span className={`paper-card__badge ${item.aligned ? "" : "paper-card__badge--warning"}`}>
+                                    {item.blocking ? "阻塞" : item.severity}
+                                  </span>
+                                  <strong>{item.label}</strong>
+                                </div>
+                                <small>{item.detail}</small>
+                                {!item.aligned ? <p>{item.recommendation}</p> : null}
+                                {item.diffs?.length ? (
+                                  <div className="stack-list">
+                                    {item.diffs.map((diff, index) => (
+                                      <small key={`${item.key}-diff-${index}`}>
+                                        {diff.field} / 期望：{diff.expected} / 实际：{diff.actual}
+                                      </small>
+                                    ))}
+                                  </div>
+                                ) : null}
+                                {item.locations?.length ? (
+                                  <div className="stack-list">
+                                    {item.locations.map((location, index) => (
+                                      <small key={`${item.key}-location-${index}`}>
+                                        {location.label}（{location.path}）：{location.snippet}
+                                      </small>
+                                    ))}
+                                  </div>
+                                ) : null}
                               </div>
                             ))}
                           </div>

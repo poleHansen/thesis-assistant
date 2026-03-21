@@ -110,6 +110,31 @@ def get_project(project_id: str) -> dict:
     return to_plain_data(state)
 
 
+@app.get("/projects/{project_id}/workflow")
+def get_project_workflow(project_id: str) -> dict:
+    state = repository.get(project_id)
+    if not state:
+        raise HTTPException(status_code=404, detail="Project not found")
+    consistency_summary = state.result_schema.get("consistency_summary", {}) if isinstance(state.result_schema, dict) else {}
+    findings = consistency_summary.get("findings", []) if isinstance(consistency_summary, dict) else []
+    blocking_findings = [item for item in findings if isinstance(item, dict) and item.get("blocking")]
+    return {
+        "project_id": state.project_id,
+        "status": state.status,
+        "workflow_phase": state.workflow_phase,
+        "workflow_outcome": state.workflow_outcome,
+        "current_node": state.current_node,
+        "last_error": state.last_error,
+        "last_failure_category": state.last_failure_category,
+        "node_runs": to_plain_data(state.node_runs),
+        "checkpoints": to_plain_data(state.checkpoints),
+        "rollback_history": to_plain_data(state.rollback_history),
+        "audit_trail": to_plain_data(state.audit_trail),
+        "blocking_findings": blocking_findings,
+        "consistency_summary": consistency_summary,
+    }
+
+
 @app.post("/projects/{project_id}/files")
 async def upload_file(
     project_id: str,

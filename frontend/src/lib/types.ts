@@ -1,4 +1,31 @@
 export type ProjectStatus = "created" | "running" | "completed" | "failed";
+export type WorkflowPhase =
+  | "intake"
+  | "planning"
+  | "research"
+  | "implementation"
+  | "writing_delivery"
+  | "review"
+  | "completed";
+export type WorkflowNodeStatus =
+  | "pending"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "skipped"
+  | "rolled_back";
+export type WorkflowOutcome =
+  | "not_started"
+  | "success"
+  | "partial_success"
+  | "rollback_success"
+  | "failed";
+export type FailureCategory =
+  | "transient"
+  | "validation"
+  | "consistency"
+  | "rendering"
+  | "unknown";
 export type TemplateSourceType = "user_upload" | "library_default";
 export type UploadKind = "word_template" | "ppt_template" | "paper_pdf";
 export type ModelTaskType =
@@ -203,6 +230,31 @@ export interface ConsistencyCheckItem {
   detail: string;
 }
 
+export interface ConsistencyFinding {
+  key: string;
+  label: string;
+  aligned: boolean;
+  detail: string;
+  severity: "warning" | "error";
+  blocking: boolean;
+  source: string;
+  target: string;
+  message: string;
+  recommendation: string;
+  diffs?: Array<{
+    field: string;
+    expected: string;
+    actual: string;
+    status: string;
+  }>;
+  locations?: Array<{
+    kind: string;
+    path: string;
+    label: string;
+    snippet: string;
+  }>;
+}
+
 export interface ArtifactBundle {
   literature_review?: string | null;
   innovation_report?: string | null;
@@ -215,10 +267,60 @@ export interface ArtifactBundle {
   qa_report?: string | null;
 }
 
+export interface WorkflowNodeRun {
+  node_name: string;
+  phase: WorkflowPhase;
+  status: WorkflowNodeStatus;
+  attempt: number;
+  started_at: string;
+  ended_at: string;
+  provider: string;
+  model: string;
+  fallback_used: boolean;
+  message: string;
+  error_category: FailureCategory;
+  error_detail: string;
+}
+
+export interface AuditEvent {
+  timestamp: string;
+  level: "info" | "warning" | "error";
+  phase: WorkflowPhase;
+  node_name: string;
+  message: string;
+  attempt: number;
+  provider: string;
+  model: string;
+  fallback_used: boolean;
+}
+
+export interface WorkflowCheckpoint {
+  checkpoint_id: string;
+  phase: WorkflowPhase;
+  node_name: string;
+  created_at: string;
+  summary: string;
+}
+
+export interface RollbackRecord {
+  from_phase: WorkflowPhase;
+  to_phase: WorkflowPhase;
+  reason: string;
+  trigger_node: string;
+  created_at: string;
+  recovered: boolean;
+}
+
 export interface ProjectState {
   project_id: string;
   request: ProjectCreate;
   status: ProjectStatus;
+  workflow_phase: WorkflowPhase;
+  workflow_outcome: WorkflowOutcome;
+  current_node: string;
+  active_run_id: string;
+  last_error: string;
+  last_failure_category: FailureCategory;
   template_source?: TemplateSource | null;
   template_manifest?: TemplateManifest | null;
   uploaded_pdf_paths: string[];
@@ -248,7 +350,13 @@ export interface ProjectState {
       plan_config_aligned?: boolean;
       paper_experiment_aligned?: boolean;
       ppt_mapping_aligned?: boolean;
+      citation_binding_aligned?: boolean;
+      paper_code_aligned?: boolean;
       checks?: ConsistencyCheckItem[];
+      findings?: ConsistencyFinding[];
+      blocking_count?: number;
+      aligned_count?: number;
+      total_checks?: number;
       warnings?: string[];
     };
     [key: string]: unknown;
@@ -261,6 +369,26 @@ export interface ProjectState {
   warnings: string[];
   artifacts: ArtifactBundle;
   execution_log: string[];
+  node_runs: Record<string, WorkflowNodeRun>;
+  audit_trail: AuditEvent[];
+  checkpoints: WorkflowCheckpoint[];
+  rollback_history: RollbackRecord[];
+}
+
+export interface WorkflowStateSummary {
+  project_id: string;
+  status: ProjectStatus;
+  workflow_phase: WorkflowPhase;
+  workflow_outcome: WorkflowOutcome;
+  current_node: string;
+  last_error: string;
+  last_failure_category: FailureCategory;
+  node_runs: Record<string, WorkflowNodeRun>;
+  checkpoints: WorkflowCheckpoint[];
+  rollback_history: RollbackRecord[];
+  audit_trail: AuditEvent[];
+  blocking_findings: ConsistencyFinding[];
+  consistency_summary?: ProjectState["result_schema"]["consistency_summary"];
 }
 
 export interface ProjectListItem {

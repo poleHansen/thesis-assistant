@@ -7,6 +7,7 @@ import type {
   ProjectListItem,
   ProjectState,
   UploadKind,
+  WorkflowStateSummary,
 } from "./types";
 
 const API_BASE = "/api";
@@ -54,6 +55,10 @@ export async function createProject(payload: ProjectCreate) {
 
 export function getProject(projectId: string) {
   return requestJson<ProjectState>(`${API_BASE}/projects/${projectId}`);
+}
+
+export function getProjectWorkflow(projectId: string) {
+  return requestJson<WorkflowStateSummary>(`${API_BASE}/projects/${projectId}/workflow`);
 }
 
 export async function uploadProjectFile(projectId: string, kind: UploadKind, file: File) {

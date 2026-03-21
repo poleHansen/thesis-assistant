@@ -9,6 +9,11 @@ interface RunStatusCardProps {
 
 export function RunStatusCard({ project, running, onRun }: RunStatusCardProps) {
   const status = project?.status ?? "created";
+  const workflowPhase = project?.workflow_phase ?? "intake";
+  const workflowOutcome = project?.workflow_outcome ?? "not_started";
+  const currentNode = project?.current_node ?? "";
+  const lastError = project?.last_error ?? "";
+  const lastFailureCategory = project?.last_failure_category ?? "unknown";
 
   return (
     <section className="panel glass-card">
@@ -22,6 +27,12 @@ export function RunStatusCard({ project, running, onRun }: RunStatusCardProps) {
       <p className="panel__text">
         运行后将依次执行文献检索、创新点分析、实验设计、代码骨架生成、论文模板化输出和答辩材料生成。
       </p>
+      <div className="stack-list">
+        <p className="muted">当前阶段：{workflowPhase}</p>
+        <p className="muted">执行结果：{workflowOutcome}</p>
+        {currentNode ? <p className="muted">当前节点：{currentNode}</p> : null}
+        {lastError ? <p className="muted">最近错误：{lastFailureCategory} / {lastError}</p> : null}
+      </div>
       <button
         className="button button--primary"
         disabled={!project || running || status === "running"}

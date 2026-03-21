@@ -8,6 +8,7 @@ from urllib import error, parse, request
 from xml.etree import ElementTree
 
 from app.domain import (
+    AuditEvent,
     ExperimentPlan,
     InnovationCandidate,
     LiteratureRecord,
@@ -15,7 +16,7 @@ from app.domain import (
     RetrievalSummary,
 )
 from app.model_gateway import ModelGateway
-from app.utils import slugify
+from app.utils import slugify, utcnow_iso
 
 
 VALID_EVIDENCE_SOURCES = {"abstract", "pdf", "manual", "fallback"}
@@ -157,6 +158,67 @@ def _build_consistency_summary(state: ProjectState) -> dict[str, object]:
     readme = state.generated_code_files.get("README.md", "")
     plan = state.experiment_plan
     warnings: list[str] = []
+    findings: list[dict[str, object]] = []
+
+    def _compact_excerpt(text: str, tokens: list[str], fallback: str) -> str:
+        normalized = _clean_text(text)
+        if not normalized:
+            return fallback
+        for token in tokens:
+            if token and token in normalized:
+                start = max(0, normalized.index(token) - 40)
+                end = min(len(normalized), start + 140)
+                return normalized[start:end]
+        return normalized[:140]
+
+    def _missing_items(text: str, expected_values: list[str]) -> list[str]:
+        return [value for value in expected_values if value and value not in text]
+
+    def _location(kind: str, path: str, label: str, snippet: str) -> dict[str, str]:
+        return {"kind": kind, "path": path, "label": label, "snippet": snippet}
+
+    def _diff_item(field: str, expected: str, actual: str, status: str) -> dict[str, str]:
+        return {
+            "field": field,
+            "expected": expected,
+            "actual": actual,
+            "status": status,
+        }
+
+    def add_finding(
+        *,
+        key: str,
+        label: str,
+        aligned: bool,
+        detail: str,
+        severity: str,
+        blocking: bool,
+        source: str,
+        target: str,
+        recommendation: str,
+        diffs: list[dict[str, str]] | None = None,
+        locations: list[dict[str, str]] | None = None,
+    ) -> None:
+        message = detail if aligned else recommendation
+        findings.append(
+            {
+                "key": key,
+                "label": label,
+                "aligned": aligned,
+                "detail": detail,
+                "severity": severity,
+                "blocking": blocking and not aligned,
+                "source": source,
+                "target": target,
+                "message": message,
+                "recommendation": recommendation,
+                "diffs": diffs or [],
+                "locations": locations or [],
+            }
+        )
+        if not aligned:
+            warnings.append(recommendation)
+
     if not plan:
         return {
             "procedure_readme_aligned": False,
@@ -164,7 +226,12 @@ def _build_consistency_summary(state: ProjectState) -> dict[str, object]:
             "paper_experiment_aligned": False,
             "plan_config_aligned": False,
             "ppt_mapping_aligned": False,
+            "citation_binding_aligned": False,
             "checks": [],
+            "findings": [],
+            "blocking_count": 0,
+            "aligned_count": 0,
+            "total_checks": 0,
             "warnings": ["实验计划尚未生成，无法执行里程碑三一致性检查。"],
         }
     procedure_document = str(state.result_schema.get("procedure_document", ""))
@@ -178,10 +245,36 @@ def _build_consistency_summary(state: ProjectState) -> dict[str, object]:
         fragment in config_text
         for fragment in ["batch_size", "epochs", "result_dir"]
     ) and all(result_file.split("/", 1)[-1] in config_text for result_file in plan.result_files)
+    paper_code_aligned = all(result_file in paper_text or result_file.split("/", 1)[-1] in paper_text for result_file in plan.result_files[:2])
     ppt_mapping = state.result_schema.get("ppt_section_mapping", {})
     ppt_mapping_aligned = isinstance(ppt_mapping, dict) and all(
         slide in ppt_mapping for slide in ["方法设计", "实验设置", "结果分析", "结论与展望"]
     )
+    references_section_name = next((key for key in state.paper_sections if "参考文献" in key), None)
+    references_text = state.paper_sections.get(references_section_name, "") if references_section_name else ""
+    related_work_key = next((key for key in state.paper_sections if "相关工作" in key), None)
+    related_work_text = state.paper_sections.get(related_work_key, "") if related_work_key else ""
+    citation_lines = [line for line in (references_text + "\n" + related_work_text).splitlines() if line.strip().startswith("[")]
+    citation_binding_aligned = len(citation_lines) >= min(2, max(1, len(state.literature_records[:3])))
+    missing_readme_commands = _missing_items(readme, list(plan.run_commands.values()))
+    missing_procedure_commands = _missing_items(procedure_document, list(plan.run_commands.values()))
+    missing_readme_result_files = _missing_items(readme, plan.result_files)
+    missing_procedure_result_files = _missing_items(procedure_document, plan.result_files)
+    missing_config_fragments = _missing_items(config_text, ["batch_size", "epochs", "result_dir"])
+    missing_config_result_files = [
+        result_file.split("/", 1)[-1] for result_file in plan.result_files if result_file.split("/", 1)[-1] not in config_text
+    ]
+    missing_paper_metrics = [
+        metric for metric in plan.metrics[:2] if metric not in paper_text and metric not in str(state.result_schema.get("result_summary_for_paper", ""))
+    ]
+    missing_paper_result_files = [
+        result_file for result_file in plan.result_files[:2] if result_file not in paper_text and result_file.split("/", 1)[-1] not in paper_text
+    ]
+    missing_ppt_slides = [
+        slide for slide in ["方法设计", "实验设置", "结果分析", "结论与展望"] if not isinstance(ppt_mapping, dict) or slide not in ppt_mapping
+    ]
+    expected_citation_count = min(2, max(1, len(state.literature_records[:3])))
+    missing_citation_bindings = max(0, expected_citation_count - len(citation_lines))
     checks = [
         {
             "key": "procedure_readme",
@@ -213,24 +306,165 @@ def _build_consistency_summary(state: ProjectState) -> dict[str, object]:
             "aligned": ppt_mapping_aligned,
             "detail": "检查方法、实验、结果、结论页是否具备章节映射关系。",
         },
+        {
+            "key": "citation_binding",
+            "label": "引用绑定 ↔ 文献记录",
+            "aligned": citation_binding_aligned,
+            "detail": "检查相关工作或参考文献章节是否已绑定文献引用条目。",
+        },
+        {
+            "key": "paper_code",
+            "label": "论文实验章节 ↔ 代码结果文件",
+            "aligned": paper_code_aligned,
+            "detail": "检查论文实验章节是否引用 README 约定的结果文件或结果摘要。",
+        },
     ]
-    if not procedure_readme_aligned:
-        warnings.append("步骤文档与 README 的运行命令尚未完全对齐。")
-    if not result_files_aligned:
-        warnings.append("结果文件约定未同时出现在步骤文档和 README 中。")
-    if not plan_config_aligned:
-        warnings.append("实验计划中的关键参数或结果文件约定尚未完整映射到默认配置文件。")
-    if not paper_experiment_aligned:
-        warnings.append("论文实验章节尚未复用实验指标或结果摘要。")
-    if not ppt_mapping_aligned:
-        warnings.append("PPT 页面与论文章节的映射仍不完整。")
+
+    add_finding(
+        key="procedure_readme",
+        label="步骤文档 ↔ README 命令",
+        aligned=procedure_readme_aligned,
+        detail="install/train/eval/infer 命令在步骤文档与 README 中保持一致。",
+        severity="warning",
+        blocking=False,
+        source="procedure_document",
+        target="README.md",
+        recommendation="步骤文档与 README 的运行命令尚未完全对齐。",
+        diffs=[
+            _diff_item("README.md", "；".join(list(plan.run_commands.values())), "；".join(missing_readme_commands) or "全部存在", "missing" if missing_readme_commands else "aligned"),
+            _diff_item("procedure_document", "；".join(list(plan.run_commands.values())), "；".join(missing_procedure_commands) or "全部存在", "missing" if missing_procedure_commands else "aligned"),
+        ],
+        locations=[
+            _location("document", "result_schema.procedure_document", "实验步骤文档", _compact_excerpt(procedure_document, list(plan.run_commands.values()), "步骤文档暂无内容")),
+            _location("file", "generated_code_files/README.md", "README.md", _compact_excerpt(readme, list(plan.run_commands.values()), "README 暂无内容")),
+        ],
+    )
+    add_finding(
+        key="result_files",
+        label="步骤文档 ↔ README 结果文件",
+        aligned=result_files_aligned,
+        detail="results/ 下的训练、评估、推理输出在步骤文档与 README 中一致。",
+        severity="warning",
+        blocking=False,
+        source="procedure_document",
+        target="README.md",
+        recommendation="结果文件约定未同时出现在步骤文档和 README 中。",
+        diffs=[
+            _diff_item("README.md", "；".join(plan.result_files), "；".join(missing_readme_result_files) or "全部存在", "missing" if missing_readme_result_files else "aligned"),
+            _diff_item("procedure_document", "；".join(plan.result_files), "；".join(missing_procedure_result_files) or "全部存在", "missing" if missing_procedure_result_files else "aligned"),
+        ],
+        locations=[
+            _location("document", "result_schema.procedure_document", "实验步骤文档", _compact_excerpt(procedure_document, plan.result_files, "步骤文档暂无结果文件说明")),
+            _location("file", "generated_code_files/README.md", "README.md", _compact_excerpt(readme, plan.result_files, "README 暂无结果文件说明")),
+        ],
+    )
+    add_finding(
+        key="plan_config",
+        label="实验计划 ↔ 配置文件",
+        aligned=plan_config_aligned,
+        detail="默认配置文件已覆盖关键训练参数和结果文件命名约定。",
+        severity="warning",
+        blocking=False,
+        source="experiment_plan",
+        target="configs/default.yaml",
+        recommendation="实验计划中的关键参数或结果文件约定尚未完整映射到默认配置文件。",
+        diffs=[
+            _diff_item("configs/default.yaml.fragments", "batch_size；epochs；result_dir", "；".join(missing_config_fragments) or "全部存在", "missing" if missing_config_fragments else "aligned"),
+            _diff_item("configs/default.yaml.result_files", "；".join([result_file.split("/", 1)[-1] for result_file in plan.result_files]), "；".join(missing_config_result_files) or "全部存在", "missing" if missing_config_result_files else "aligned"),
+        ],
+        locations=[
+            _location("object", "experiment_plan", "实验计划", _compact_excerpt(" ".join(plan.parameters + plan.result_files), plan.result_files, "实验计划包含参数与结果文件约定")),
+            _location("file", "generated_code_files/configs/default.yaml", "configs/default.yaml", _compact_excerpt(config_text, ["batch_size", "epochs", "result_dir"], "默认配置暂无内容")),
+        ],
+    )
+    add_finding(
+        key="paper_experiment",
+        label="结果分析 ↔ 论文实验章节",
+        aligned=paper_experiment_aligned,
+        detail="论文实验章节已复用实验指标或结果摘要。",
+        severity="warning",
+        blocking=False,
+        source="result_schema.result_summary_for_paper",
+        target="paper_sections.实验*",
+        recommendation="论文实验章节尚未复用实验指标或结果摘要。",
+        diffs=[
+            _diff_item("paper_sections.实验*", "；".join(plan.metrics[:2]), "；".join(missing_paper_metrics) or "全部存在", "missing" if missing_paper_metrics else "aligned"),
+        ],
+        locations=[
+            _location("section", "paper_sections", experiment_key or "实验章节", _compact_excerpt(paper_text, plan.metrics[:2], "实验章节暂无内容")),
+            _location("object", "result_schema.result_summary_for_paper", "论文结果摘要", _compact_excerpt(str(state.result_schema.get("result_summary_for_paper", "")), plan.metrics[:2], "论文结果摘要暂无内容")),
+        ],
+    )
+    add_finding(
+        key="paper_code",
+        label="论文实验章节 ↔ 代码结果文件",
+        aligned=paper_code_aligned,
+        detail="论文实验章节已引用代码侧结果文件或复现实验产物。",
+        severity="warning",
+        blocking=False,
+        source="paper_sections.实验*",
+        target="generated_code_files",
+        recommendation="论文实验章节尚未显式引用代码侧结果文件。",
+        diffs=[
+            _diff_item("paper_sections.实验*", "；".join(plan.result_files[:2]), "；".join(missing_paper_result_files) or "全部存在", "missing" if missing_paper_result_files else "aligned"),
+        ],
+        locations=[
+            _location("section", "paper_sections", experiment_key or "实验章节", _compact_excerpt(paper_text, plan.result_files[:2], "实验章节暂无结果文件引用")),
+            _location("file", "generated_code_files/README.md", "README.md", _compact_excerpt(readme, plan.result_files[:2], "README 暂无结果文件引用")),
+        ],
+    )
+    add_finding(
+        key="ppt_mapping",
+        label="PPT 页面 ↔ 论文章节映射",
+        aligned=ppt_mapping_aligned,
+        detail="方法、实验、结果、结论页均已映射到对应论文章节。",
+        severity="error",
+        blocking=True,
+        source="ppt_outline",
+        target="result_schema.ppt_section_mapping",
+        recommendation="PPT 页面与论文章节的映射仍不完整。",
+        diffs=[
+            _diff_item("ppt_section_mapping", "；".join(["方法设计", "实验设置", "结果分析", "结论与展望"]), "；".join(missing_ppt_slides) or "全部存在", "missing" if missing_ppt_slides else "aligned"),
+        ],
+        locations=[
+            _location("list", "ppt_outline", "PPT 大纲", _compact_excerpt(" ".join(state.ppt_outline), state.ppt_outline, "PPT 大纲暂无内容")),
+            _location("object", "result_schema.ppt_section_mapping", "PPT 章节映射", _compact_excerpt(" ".join(f"{key}:{value}" for key, value in (ppt_mapping.items() if isinstance(ppt_mapping, dict) else [])), ["方法设计", "实验设置", "结果分析", "结论与展望"], "PPT 章节映射暂无内容")),
+        ],
+    )
+    add_finding(
+        key="citation_binding",
+        label="引用绑定 ↔ 文献记录",
+        aligned=citation_binding_aligned,
+        detail="相关工作或参考文献章节已绑定可追溯的引用条目。",
+        severity="error",
+        blocking=True,
+        source="literature_records",
+        target="paper_sections.相关工作/参考文献",
+        recommendation="论文中尚未形成可追溯的引用绑定。",
+        diffs=[
+            _diff_item("citation_bindings", str(expected_citation_count), str(len(citation_lines)), "missing" if missing_citation_bindings else "aligned"),
+        ],
+        locations=[
+            _location("list", "literature_records", "文献记录", _compact_excerpt(" ".join(record.title for record in state.literature_records[:3]), [record.title for record in state.literature_records[:2]], "暂无文献记录")),
+            _location("section", "paper_sections", references_section_name or related_work_key or "参考文献/相关工作", _compact_excerpt(references_text + " " + related_work_text, citation_lines[:2], "参考文献或相关工作暂无引用条目")),
+        ],
+    )
+
+    aligned_count = sum(1 for check in checks if bool(check.get("aligned")))
+    blocking_count = sum(1 for item in findings if bool(item.get("blocking")))
     return {
         "procedure_readme_aligned": procedure_readme_aligned,
         "result_files_aligned": result_files_aligned,
         "plan_config_aligned": plan_config_aligned,
         "paper_experiment_aligned": paper_experiment_aligned,
         "ppt_mapping_aligned": ppt_mapping_aligned,
+        "citation_binding_aligned": citation_binding_aligned,
+        "paper_code_aligned": paper_code_aligned,
         "checks": checks,
+        "findings": findings,
+        "blocking_count": blocking_count,
+        "aligned_count": aligned_count,
+        "total_checks": len(checks),
         "warnings": warnings,
     }
 
@@ -503,6 +737,8 @@ def _build_section_content(section: str, state: ProjectState) -> str:
             pieces.append(result_figure_summary)
         if procedure_document and section == matching_experiment_section:
             pieces.append("实验步骤文档已同步覆盖环境配置、数据准备、参数说明、执行流程与结果记录。")
+        if plan and plan.result_files:
+            pieces.append(f"代码侧结果文件统一写入 {'、'.join(plan.result_files)}，并与 README 的复现实验命令保持一致。")
         if draft_mode and plan and plan.result_files:
             pieces.append(f"实验完成后请将结果填写至 {'、'.join(plan.result_files)} 对应文件，并据此补全主结果表、消融实验与误差分析。")
         return "\n\n".join(piece for piece in pieces if piece)
@@ -1618,6 +1854,18 @@ class BaseAgent:
 
     def log(self, state: ProjectState, message: str) -> None:
         state.execution_log.append(f"{self.name}: {message}")
+        if state.workflow_phase != "completed":
+            attempt = state.node_runs.get(self.name).attempt if self.name in state.node_runs else 0
+            state.audit_trail.append(
+                AuditEvent(
+                    timestamp=utcnow_iso(),
+                    level="info",
+                    phase=state.workflow_phase,
+                    node_name=self.name,
+                    message=message,
+                    attempt=attempt,
+                )
+            )
 
     def run(self, state: ProjectState) -> ProjectState:
         raise NotImplementedError
@@ -2815,6 +3063,15 @@ class CitationBinderAgent(BaseAgent):
             f"[{idx + 1}] {record.authors}. {record.title}. {record.year}."
             for idx, record in enumerate(state.literature_records[:8])
         ]
+        state.result_schema["citation_bindings"] = [
+            {
+                "index": idx + 1,
+                "title": record.title,
+                "source": record.source,
+                "doi_or_url": record.doi_or_url,
+            }
+            for idx, record in enumerate(state.literature_records[:8])
+        ]
         related_keys = [
             key
             for key in state.paper_sections
@@ -2854,19 +3111,18 @@ class ConsistencyCheckerAgent(BaseAgent):
     def run(self, state: ProjectState) -> ProjectState:
         findings: list[str] = []
         consistency_summary = _build_consistency_summary(state)
-        readme = state.generated_code_files.get("README.md", "")
         state.result_schema["consistency_summary"] = consistency_summary
         if state.experiment_plan:
-            metric_line = ", ".join(state.experiment_plan.metrics)
-            if metric_line and metric_line not in readme:
-                findings.append("README 中缺少实验指标定义。")
-            experiment_key = next(
-                (key for key in state.paper_sections if "实验" in key),
-                None,
-            )
+            experiment_key = next((key for key in state.paper_sections if "实验" in key), None)
             if experiment_key and "README" not in state.paper_sections[experiment_key]:
-                state.paper_sections[experiment_key] += "\n\n实验复现命令、数据集和指标与 README 保持一致。"
-        findings.extend(str(item) for item in consistency_summary.get("warnings", []))
+                state.paper_sections[experiment_key] += "\n\n实验复现命令、结果文件与 README 保持一致。"
+        for item in consistency_summary.get("findings", []):
+            if not isinstance(item, dict) or item.get("aligned"):
+                continue
+            label = str(item.get("label", "一致性检查"))
+            message = str(item.get("message", "待复核"))
+            severity = str(item.get("severity", "warning"))
+            findings.append(f"[{severity}] {label}：{message}")
         if not findings:
             findings.append("论文、实验步骤与代码 README 的关键信息已完成基础一致性对齐。")
         state.review_findings.extend(findings)
