@@ -151,6 +151,18 @@ class ModelSettingsStore:
         except (TypeError, ValueError) as exc:
             raise ModelSettingsError(f"provider '{provider_id}' priority must be an integer") from exc
 
+        # Optional API mode: controls which OpenAI-compatible endpoint is used.
+        # Defaults to chat_completions for backward compatibility.
+        api_mode_raw = str(raw.get("api_mode", "chat_completions") or "chat_completions").strip().lower()
+        if api_mode_raw in {"chat", "chat_completion", "chat-completions", "chat_completions"}:
+            api_mode = "chat_completions"
+        elif api_mode_raw in {"responses", "response"}:
+            api_mode = "responses"
+        else:
+            raise ModelSettingsError(
+                f"provider '{provider_id}' api_mode must be one of 'chat_completions' or 'responses'"
+            )
+
         models_raw = raw.get("models", {})
         if not isinstance(models_raw, dict):
             raise ModelSettingsError(f"provider '{provider_id}' models must be an object")
@@ -175,6 +187,7 @@ class ModelSettingsStore:
             api_key=api_key,
             priority=priority,
             enabled=bool(raw.get("enabled", True)),
+             api_mode=api_mode,
             models=normalized_models,
         )
 

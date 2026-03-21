@@ -1,14 +1,20 @@
 from __future__ import annotations
 
 import csv
+import io
 import json
+from dataclasses import dataclass
+from pathlib import Path
 import re
+import shutil
+import subprocess
 import textwrap
 import zipfile
-from pathlib import Path
 
 from app.domain import ArtifactBundle, PaperDocument, PaperNode, ProjectState, TemplateManifest
 from app.storage import ProjectStorage
+from docx.enum.text import WD_ALIGN_PARAGRAPH  # type: ignore
+from docx.shared import Pt  # type: ignore
 
 
 DOCX_PLACEHOLDER_PATTERN = re.compile(r"\{\{\s*([\w\-.\u4e00-\u9fff ]+)\s*\}\}")
@@ -23,9 +29,69 @@ SECTION_ALIAS_GROUPS = [
 ]
 
 
+@dataclass(frozen=True, slots=True)
+class ThesisHtmlStyle:
+    font_family: str
+    font_size_pt: int
+    bold: bool = False
+    text_align: str = "justify"
+    first_line_indent_chars: int = 0
+    margin_top_pt: int = 0
+    margin_bottom_pt: int = 12
+    line_height: float = 1.75
+
+
+@dataclass(frozen=True, slots=True)
+class ThesisHtmlStyleProfile:
+    title: ThesisHtmlStyle
+    author_meta: ThesisHtmlStyle
+    cover_label: ThesisHtmlStyle
+    heading_1: ThesisHtmlStyle
+    heading_2: ThesisHtmlStyle
+    body: ThesisHtmlStyle
+
+
+DEFAULT_THESIS_HTML_STYLE_PROFILE = ThesisHtmlStyleProfile(
+    title=ThesisHtmlStyle(
+        font_family="宋体",
+        font_size_pt=16,
+        bold=True,
+        text_align="center",
+        margin_top_pt=0,
+        margin_bottom_pt=64,
+        line_height=1.5,
+    ),
+    author_meta=ThesisHtmlStyle(font_family="宋体", font_size_pt=16, text_align="center"),
+    cover_label=ThesisHtmlStyle(font_family="宋体", font_size_pt=12, text_align="left"),
+    heading_1=ThesisHtmlStyle(
+        font_family="宋体",
+        font_size_pt=15,
+        bold=True,
+        margin_top_pt=18,
+        margin_bottom_pt=6,
+    ),
+    heading_2=ThesisHtmlStyle(
+        font_family="宋体",
+        font_size_pt=14,
+        bold=True,
+        margin_top_pt=12,
+        margin_bottom_pt=6,
+    ),
+    body=ThesisHtmlStyle(
+        font_family="宋体",
+        font_size_pt=12,
+        first_line_indent_chars=2,
+        margin_top_pt=0,
+        margin_bottom_pt=6,
+        line_height=1.0,
+    ),
+)
+
+
 class ArtifactService:
     def __init__(self, storage: ProjectStorage) -> None:
         self.storage = storage
+        self.thesis_html_style_profile = DEFAULT_THESIS_HTML_STYLE_PROFILE
 
     def render_all(self, state: ProjectState) -> ProjectState:
         artifacts_dir = self.storage.ensure_project_tree(state.project_id) / "artifacts"
@@ -54,6 +120,10 @@ class ArtifactService:
                 reports_dir / "procedure.docx",
                 str(state.result_schema.get("procedure_document", "")),
                 manifest=state.template_manifest,
+            ),
+            thesis_html=self._write_text(
+                reports_dir / "thesis_source.html",
+                self._render_thesis_html(state),
             ),
             thesis_docx=self._write_thesis_docx(
                 reports_dir / "thesis.docx",
@@ -90,6 +160,127 @@ class ArtifactService:
         if state.template_source and state.template_source.ppt_template_path:
             return state.template_source.ppt_template_path
         return None
+
+    def _render_thesis_html(self, state: ProjectState) -> str:
+        profile = self.thesis_html_style_profile
+        paper_document = state.paper_document or self._paper_document_from_sections(state)
+        title = self._escape_html((paper_document.title if paper_document else state.request.topic) or "毕业论文")
+        meta_lines = self._build_cover_meta_lines(state)
+        html_parts = [
+            "<html>",
+            "<head><meta http-equiv=\"Content-Type\" content=\"text/html; charset=utf-8\"></head>",
+            '<body style="margin:0;padding:0;background:#ffffff;">',
+            '<div style="width:720px;min-height:960px;margin:0 auto;padding:72pt 64pt 48pt 64pt;box-sizing:border-box;">',
+            '<div style="height:96pt;"></div>',
+            f'<p style="{self._style_to_inline_css(profile.title)};margin:0 0 64pt 0;letter-spacing:1pt;">{title}</p>',
+        ]
+        for line in meta_lines:
+            label, _, value = line.partition("：")
+            html_parts.append(
+                '<p '
+                f'title="{self._escape_html(line)}" '
+                'style="'
+                f'{self._style_to_inline_css(profile.cover_label)}'
+                ';display:flex;align-items:flex-end;gap:12pt;margin:0 0 18pt 0;">'
+                f'<span style="display:inline-block;min-width:84pt;">{self._escape_html(label)}：</span>'
+                '<span style="flex:1;border-bottom:1px solid #222;padding:0 0 2pt 0;min-height:18pt;">'
+                f'{self._escape_html(value)}'
+                '</span>'
+                '</p>'
+            )
+        html_parts.append('<div style="height:48pt;"></div>')
+        if paper_document:
+            for node in paper_document.nodes:
+                html_parts.extend(self._render_paper_node_html(node, state))
+        else:
+            for section in state.paper_outline:
+                html_parts.append(f'<p style="{self._style_to_inline_css(profile.heading_1)}">{self._escape_html(section)}</p>')
+                body_text = self._resolve_section_text(section, state)
+                for paragraph in self._split_html_paragraphs(body_text):
+                    html_parts.append(f'<p style="{self._style_to_inline_css(profile.body)}">{self._escape_html(paragraph)}</p>')
+                if "实验" in section:
+                    html_parts.extend(self._render_result_analysis_html(state))
+        html_parts.append("</div>")
+        html_parts.append("</body>")
+        html_parts.append("</html>")
+        return "\n".join(html_parts)
+
+    def _render_paper_node_html(self, node: PaperNode, state: ProjectState) -> list[str]:
+        profile = self.thesis_html_style_profile
+        parts = [f'<p style="{self._style_to_inline_css(profile.heading_1)}">{self._escape_html(node.title)}</p>']
+        for paragraph in node.paragraphs:
+            for block in self._split_html_paragraphs(paragraph):
+                parts.append(f'<p style="{self._style_to_inline_css(profile.body)}">{self._escape_html(block)}</p>')
+        for child in node.children:
+            parts.append(f'<p style="{self._style_to_inline_css(profile.heading_2)}">{self._escape_html(child.title)}</p>')
+            for paragraph in child.paragraphs:
+                for block in self._split_html_paragraphs(paragraph):
+                    parts.append(f'<p style="{self._style_to_inline_css(profile.body)}">{self._escape_html(block)}</p>')
+        if "实验" in node.title:
+            parts.extend(self._render_result_analysis_html(state))
+        return parts
+
+    def _render_result_analysis_html(self, state: ProjectState) -> list[str]:
+        profile = self.thesis_html_style_profile
+        parts: list[str] = []
+        for block in self._format_result_analysis_blocks(state):
+            if block.startswith("### "):
+                parts.append(
+                    f'<p style="{self._style_to_inline_css(profile.heading_2)}">{self._escape_html(block[4:])}</p>'
+                )
+                continue
+            if block.strip():
+                parts.append(f'<p style="{self._style_to_inline_css(profile.body)}">{self._escape_html(block)}</p>')
+        return parts
+
+    def _build_cover_meta_lines(self, state: ProjectState) -> list[str]:
+        manifest = state.template_manifest or TemplateManifest([], {}, [], [], [], "", {}, {})
+        template_name = state.template_source.template_name if state.template_source else "未设置"
+        placeholder_values = self._thesis_placeholder_values(state)
+        lines = [
+            f"课题名称：{state.request.topic}",
+            f"论文模板：{template_name}",
+        ]
+        preferred_fields = [field for field in manifest.cover_fields if field and field not in {"题目", "课题", "标题"}]
+        if not preferred_fields:
+            preferred_fields = ["学校", "学院", "专业", "学生姓名", "学号", "指导教师", "完成日期"]
+        for field in preferred_fields:
+            value = str(placeholder_values.get(f"cover.{field}", "")).strip() or "待填写"
+            lines.append(f"{field}：{value}")
+        return lines
+
+    def _style_to_inline_css(self, style: ThesisHtmlStyle) -> str:
+        css_parts = [
+            f"font-family:{style.font_family}",
+            f"font-size:{style.font_size_pt}pt",
+            f"font-weight:{'bold' if style.bold else 'normal'}",
+            f"text-align:{style.text_align}",
+            f"margin:{style.margin_top_pt}pt 0 {style.margin_bottom_pt}pt 0",
+            f"line-height:{style.line_height}",
+        ]
+        if style.first_line_indent_chars > 0:
+            css_parts.append(f"text-indent:{style.first_line_indent_chars}em")
+        return ";".join(css_parts)
+
+    def _split_html_paragraphs(self, text: str) -> list[str]:
+        return [segment.strip() for segment in re.split(r"\n\s*\n", text) if segment.strip()]
+
+    def _escape_html(self, text: str) -> str:
+        return (
+            str(text)
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace('"', "&quot;")
+        )
+
+    def _convert_html_to_docx(self, html_path: Path, docx_path: Path) -> bool:
+        pandoc_path = shutil.which("pandoc")
+        if not pandoc_path:
+            return False
+        command = [pandoc_path, str(html_path), "-o", str(docx_path)]
+        completed = subprocess.run(command, capture_output=True, text=True, check=False)
+        return completed.returncode == 0 and docx_path.exists()
 
     def _write_literature_review(self, reports_dir: Path, state: ProjectState) -> str:
         try:
@@ -478,13 +669,26 @@ class ArtifactService:
         template_path: str | None = None,
         manifest: TemplateManifest | None = None,
     ) -> str:
+        html_path = path.with_name("thesis_source.html")
+        if not html_path.exists():
+            html_path.write_text(self._render_thesis_html(state), encoding="utf-8")
+        html_first_enabled = not template_path and not manifest
+        placeholder_values = self._thesis_placeholder_values(state)
+        if manifest:
+            for section in manifest.section_mapping:
+                if section and f"section.{section}" not in placeholder_values:
+                    self._resolve_section_text(section, state)
         if not state.paper_document:
+            if self._convert_html_to_docx(html_path, path):
+                if html_first_enabled:
+                    return str(path)
+                path.unlink(missing_ok=True)
             result = self._write_docx_like(
                 path,
                 self._thesis_text(state),
                 template_path=template_path,
                 manifest=manifest,
-                placeholder_values=self._thesis_placeholder_values(state),
+                placeholder_values=placeholder_values,
             )
             if Path(result).suffix.lower() == ".docx":
                 return result
@@ -492,10 +696,11 @@ class ArtifactService:
             state.warnings.append(warning)
             return self._write_minimal_docx_fallback(path, self._thesis_text(state), warning)
         try:
+            if html_first_enabled and self._convert_html_to_docx(html_path, path):
+                return str(path)
             from docx import Document  # type: ignore
 
             document = self._load_docx_document(Document, template_path)
-            placeholder_values = self._thesis_placeholder_values(state)
             self._replace_docx_placeholders(document, self._cover_placeholder_values(placeholder_values))
             self._clear_section_placeholders(document)
             self._render_paper_document(document, state, manifest)
@@ -801,11 +1006,36 @@ class ArtifactService:
         return manifest.style_mapping.get(key)
 
     def _resolve_docx_style(self, document, candidates: list[str | None]) -> str | None:
-        available = {style.name for style in document.styles}
+        available: dict[str, str] = {}
+        for style in document.styles:
+            name = getattr(style, "name", None)
+            style_id = getattr(style, "style_id", None)
+            for value in (name, style_id):
+                normalized = self._normalize_docx_style_key(value)
+                if normalized and normalized not in available:
+                    available[normalized] = name or style_id
         for candidate in candidates:
-            if candidate and candidate in available:
-                return candidate
+            normalized = self._normalize_docx_style_key(candidate)
+            if normalized and normalized in available:
+                return available[normalized]
         return None
+
+    def _normalize_docx_style_key(self, value: str | None) -> str:
+        if not value:
+            return ""
+        collapsed = re.sub(r"[\s_-]+", "", str(value).strip().lower())
+        alias_map = {
+            "heading1": "heading1",
+            "heading2": "heading2",
+            "heading3": "heading3",
+            "title": "title",
+            "normal": "normal",
+            "bodytext": "bodytext",
+            "bodytextfirstindent": "bodytextfirstindent",
+            "caption": "caption",
+            "tablegrid": "tablegrid",
+        }
+        return alias_map.get(collapsed, collapsed)
 
     def _add_docx_paragraph(
         self,
@@ -819,9 +1049,28 @@ class ArtifactService:
             document.add_paragraph(text, style=style_name)
             return
         if heading_level is not None:
-            document.add_heading(text, level=heading_level)
+            self._add_manual_heading(document, text, heading_level)
             return
         document.add_paragraph(text)
+
+    def _add_manual_heading(self, document, text: str, heading_level: int) -> None:
+        paragraph = document.add_paragraph()
+        run = paragraph.add_run(text)
+        run.bold = True
+
+        if heading_level <= 1:
+            run.font.size = Pt(16)
+            paragraph.paragraph_format.space_before = Pt(18)
+            paragraph.paragraph_format.space_after = Pt(12)
+            paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER if len(text) <= 24 and not text.startswith("第") else WD_ALIGN_PARAGRAPH.LEFT
+        elif heading_level == 2:
+            run.font.size = Pt(14)
+            paragraph.paragraph_format.space_before = Pt(12)
+            paragraph.paragraph_format.space_after = Pt(6)
+        else:
+            run.font.size = Pt(12)
+            paragraph.paragraph_format.space_before = Pt(6)
+            paragraph.paragraph_format.space_after = Pt(3)
 
     def _write_minimal_pdf(self, path: Path, content: str) -> str:
         wrapped = textwrap.wrap(

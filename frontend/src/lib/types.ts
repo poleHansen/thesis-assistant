@@ -417,6 +417,9 @@ export interface ModelProviderSettings {
   api_key: string;
   priority: number;
   enabled: boolean;
+  // API mode controls which OpenAI-compatible endpoint is used by this provider.
+  // "chat_completions" -> /chat/completions, "responses" -> /responses.
+  api_mode?: "chat_completions" | "responses";
   models: Partial<Record<ModelTaskType, string>>;
 }
 

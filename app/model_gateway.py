@@ -31,7 +31,12 @@ class ModelGateway:
         self.settings = settings
         self.provider_settings = {item.id: item for item in settings.providers}
         self.providers = {
-            item.id: OpenAICompatibleProvider(item.id, item.api_base, item.api_key)
+            item.id: OpenAICompatibleProvider(
+                item.id,
+                item.api_base,
+                item.api_key,
+                getattr(item, "api_mode", "chat_completions"),
+            )
             for item in settings.providers
             if item.enabled
         }
@@ -54,6 +59,7 @@ class ModelGateway:
             provider_settings.id,
             provider_settings.api_base,
             provider_settings.api_key,
+            getattr(provider_settings, "api_mode", "chat_completions"),
         )
         try:
             response = provider.chat(

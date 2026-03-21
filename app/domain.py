@@ -84,6 +84,9 @@ class ModelProviderSettings:
     api_key: str
     priority: int
     enabled: bool
+    # API mode controls which OpenAI-compatible endpoint is used.
+    # "chat_completions" uses /chat/completions, "responses" uses /responses.
+    api_mode: str = "chat_completions"
     models: dict[str, str] = field(default_factory=dict)
 
 
@@ -234,6 +237,7 @@ class ArtifactBundle:
     innovation_report: str | None = None
     experiment_plan: str | None = None
     procedure: str | None = None
+    thesis_html: str | None = None
     thesis_docx: str | None = None
     thesis_pdf: str | None = None
     code_zip: str | None = None

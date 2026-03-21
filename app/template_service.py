@@ -148,27 +148,28 @@ class TemplateService:
             for paragraph in self._iter_docx_paragraphs(document):
                 text = paragraph.text.strip()
                 style_name = getattr(paragraph.style, "name", "") or "Normal"
-                if style_name.startswith("Heading") and text:
+                normalized_style = style_name.strip().lower()
+                if normalized_style.startswith("heading") and text:
                     headings.append(text)
                 self._collect_placeholder_names(
                     text,
                     section_placeholders=section_placeholders,
                     cover_placeholders=cover_placeholders,
                 )
-                if "title" in style_name.lower():
+                if "title" in normalized_style:
                     styles_seen["title"] = style_name
-                elif style_name.startswith("Heading 1"):
+                elif normalized_style.startswith("heading 1") or normalized_style == "heading1":
                     styles_seen["chapter"] = style_name
-                elif style_name.startswith("Heading 2"):
+                elif normalized_style.startswith("heading 2") or normalized_style == "heading2":
                     styles_seen["section"] = style_name
-                elif style_name.startswith("Heading 3"):
+                elif normalized_style.startswith("heading 3") or normalized_style == "heading3":
                     styles_seen["subsection"] = style_name
-                elif style_name.lower() in {"normal", "body text", "body text first indent"}:
+                elif normalized_style in {"normal", "body text", "body text first indent"}:
                     styles_seen.setdefault("body", style_name)
-                elif "caption" in style_name.lower():
+                elif "caption" in normalized_style:
                     styles_seen["caption"] = style_name
                     styles_seen.setdefault("figure", style_name)
-                elif "reference" in style_name.lower() or "参考文献" in style_name:
+                elif "reference" in normalized_style or "参考文献" in style_name:
                     styles_seen["reference"] = style_name
             if section_placeholders:
                 section_mapping = section_placeholders[:20]

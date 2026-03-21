@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import shutil
+from unittest import mock
 import unittest
 import uuid
 from pathlib import Path
 
-from app.artifact_service import ArtifactService
+from app.artifact_service import ArtifactService, DEFAULT_THESIS_HTML_STYLE_PROFILE
 from app.domain import InnovationCandidate, LiteratureRecord, PaperDocument, PaperNode, ProjectCreate, ProjectState, TemplateManifest, TemplateSource
 from app.storage import ProjectStorage
+from app.template_service import TemplateService
 
 try:
     from docx import Document  # type: ignore
@@ -45,6 +47,196 @@ class ArtifactServiceTest(unittest.TestCase):
 
     def tearDown(self) -> None:
         shutil.rmtree(self.root, ignore_errors=True)
+
+    def test_default_thesis_html_style_profile_matches_expected_school_rules(self) -> None:
+        profile = DEFAULT_THESIS_HTML_STYLE_PROFILE
+
+        self.assertEqual(profile.title.font_family, "宋体")
+        self.assertEqual(profile.title.font_size_pt, 16)
+        self.assertTrue(profile.title.bold)
+        self.assertEqual(profile.title.text_align, "center")
+
+        self.assertEqual(profile.author_meta.font_family, "宋体")
+        self.assertEqual(profile.author_meta.font_size_pt, 16)
+        self.assertEqual(profile.author_meta.text_align, "center")
+
+        self.assertEqual(profile.cover_label.font_family, "宋体")
+        self.assertEqual(profile.cover_label.font_size_pt, 12)
+        self.assertEqual(profile.cover_label.text_align, "left")
+
+        self.assertEqual(profile.heading_1.font_family, "宋体")
+        self.assertEqual(profile.heading_1.font_size_pt, 15)
+        self.assertTrue(profile.heading_1.bold)
+
+        self.assertEqual(profile.heading_2.font_family, "宋体")
+        self.assertEqual(profile.heading_2.font_size_pt, 14)
+        self.assertTrue(profile.heading_2.bold)
+
+        self.assertEqual(profile.body.font_family, "宋体")
+        self.assertEqual(profile.body.font_size_pt, 12)
+        self.assertEqual(profile.body.first_line_indent_chars, 2)
+
+    def test_render_thesis_html_outputs_inline_styles_for_title_headings_and_body(self) -> None:
+        state = self._build_state("", "")
+        state.paper_document = PaperDocument(
+            title="中文文本分类算法",
+            nodes=[
+                PaperNode(
+                    title="第1章 绪论",
+                    level=1,
+                    children=[
+                        PaperNode(title="研究背景", level=2, paragraphs=["这是第一段正文。\n\n这是第二段正文。"]),
+                    ],
+                )
+            ],
+        )
+
+        html = self.service._render_thesis_html(state)
+
+        self.assertIn("font-family:宋体", html)
+        self.assertIn("font-size:16pt", html)
+        self.assertIn("font-size:15pt", html)
+        self.assertIn("font-size:14pt", html)
+        self.assertIn("font-size:12pt", html)
+        self.assertIn("text-align:center", html)
+        self.assertIn("text-indent:2em", html)
+        self.assertIn("中文文本分类算法", html)
+        self.assertIn("第1章 绪论", html)
+        self.assertIn("研究背景", html)
+        self.assertIn("这是第一段正文。", html)
+
+    def test_render_thesis_html_outputs_template_cover_fields_with_placeholders(self) -> None:
+        state = self._build_state("", "")
+        state.template_manifest = TemplateManifest(
+            section_mapping=["第1章 绪论"],
+            style_mapping={},
+            cover_fields=["学校", "学院", "专业", "学号", "指导教师"],
+            figure_slots=[],
+            table_slots=[],
+            citation_style="GB/T 7714",
+            header_footer_rules={},
+            toc_rules={},
+        )
+        state.paper_document = PaperDocument(
+            title="中文文本分类算法",
+            nodes=[PaperNode(title="第1章 绪论", level=1, paragraphs=["正文段落。"])],
+        )
+
+        html = self.service._render_thesis_html(state)
+
+        self.assertIn("课题名称：中文文本分类算法", html)
+        self.assertIn("论文模板：工科毕业论文", html)
+        self.assertIn("学校：待填写", html)
+        self.assertIn("学院：待填写", html)
+        self.assertIn("指导教师：待填写", html)
+        self.assertIn("width:720px", html)
+
+    def test_render_thesis_html_includes_result_analysis_blocks_for_experiment_sections(self) -> None:
+        state = self._build_state("", "")
+        state.request.delivery_mode = "draft"
+        state.paper_document = PaperDocument(
+            title="中文文本分类算法",
+            nodes=[PaperNode(title="实验", level=1, paragraphs=["实验部分概述"])],
+        )
+        state.result_schema["result_analysis_text"] = "当前处于初稿模式，真实结果需由用户完成实验后回填。"
+
+        html = self.service._render_thesis_html(state)
+
+        self.assertIn("结果分析摘要", html)
+        self.assertIn("用户完成实验后回填", html)
+
+    def test_render_all_writes_thesis_html_debug_artifact(self) -> None:
+        state = self._build_state("", "")
+        state.paper_document = PaperDocument(
+            title="中文文本分类算法",
+            nodes=[
+                PaperNode(
+                    title="第1章 绪论",
+                    level=1,
+                    children=[PaperNode(title="研究背景", level=2, paragraphs=["正文段落。"])],
+                )
+            ],
+        )
+
+        result = self.service.render_all(state)
+
+        html_path = Path(result.artifacts.thesis_html or "")
+        self.assertTrue(html_path.exists())
+        self.assertEqual(html_path.suffix, ".html")
+        html = html_path.read_text(encoding="utf-8")
+        self.assertIn("中文文本分类算法", html)
+        self.assertIn("font-family:宋体", html)
+        self.assertIn("text-indent:2em", html)
+
+    def test_convert_html_to_docx_returns_false_when_pandoc_is_missing(self) -> None:
+        html_path = self.root / "sample.html"
+        docx_path = self.root / "sample.docx"
+        html_path.write_text("<html><body><p>demo</p></body></html>", encoding="utf-8")
+
+        with mock.patch("app.artifact_service.shutil.which", return_value=None):
+            converted = self.service._convert_html_to_docx(html_path, docx_path)
+
+        self.assertFalse(converted)
+        self.assertFalse(docx_path.exists())
+
+    def test_convert_html_to_docx_invokes_pandoc_when_available(self) -> None:
+        html_path = self.root / "sample.html"
+        docx_path = self.root / "sample.docx"
+        html_path.write_text("<html><body><p>demo</p></body></html>", encoding="utf-8")
+
+        def fake_run(command, capture_output, text, check):
+            docx_path.write_bytes(b"docx")
+
+            class Result:
+                returncode = 0
+
+            return Result()
+
+        with mock.patch("app.artifact_service.shutil.which", return_value="pandoc"), mock.patch(
+            "app.artifact_service.subprocess.run",
+            side_effect=fake_run,
+        ) as run_mock:
+            converted = self.service._convert_html_to_docx(html_path, docx_path)
+
+        self.assertTrue(converted)
+        self.assertTrue(docx_path.exists())
+        run_mock.assert_called_once()
+
+    def test_write_thesis_docx_prefers_html_conversion_when_available(self) -> None:
+        state = self._build_state("", "")
+        state.paper_document = None
+        target = self.root / "thesis.docx"
+
+        def fake_convert(html_path: Path, docx_path: Path) -> bool:
+            self.assertTrue(html_path.exists())
+            docx_path.write_bytes(b"html-docx")
+            return True
+
+        with mock.patch.object(self.service, "_convert_html_to_docx", side_effect=fake_convert) as convert_mock, mock.patch.object(
+            self.service,
+            "_write_docx_like",
+            side_effect=AssertionError("legacy docx writer should not be used when html conversion succeeds"),
+        ):
+            result = self.service._write_thesis_docx(target, state)
+
+        self.assertEqual(result, str(target))
+        self.assertTrue(target.exists())
+        convert_mock.assert_called_once()
+
+    def test_write_thesis_docx_falls_back_to_legacy_path_when_html_conversion_fails(self) -> None:
+        state = self._build_state("", "")
+        state.paper_document = None
+        target = self.root / "fallback-thesis.docx"
+
+        with mock.patch.object(self.service, "_convert_html_to_docx", return_value=False), mock.patch.object(
+            self.service,
+            "_write_docx_like",
+            return_value=str(target),
+        ) as legacy_mock:
+            result = self.service._write_thesis_docx(target, state)
+
+        self.assertEqual(result, str(target))
+        legacy_mock.assert_called_once()
 
     @unittest.skipIf(
         Document is None or Presentation is None,
@@ -272,6 +464,57 @@ class ArtifactServiceTest(unittest.TestCase):
         text = "\n".join(paragraph.text for paragraph in thesis.paragraphs)
         self.assertIn("论文导出降级结果", text)
         self.assertTrue(any("论文 Word 渲染失败" in warning for warning in state.warnings))
+
+    @unittest.skipIf(Document is None, "python-docx is not installed in the current environment")
+    def test_render_all_avoids_fallback_when_template_has_no_heading_styles(self) -> None:
+        word_template = self.root / "styleless-template.docx"
+        template = Document()
+        title = template.add_paragraph()
+        title.add_run("{{cover.题目}}")
+        template.add_paragraph("摘要")
+        template.add_paragraph("{{section.摘要}}")
+        template.save(word_template)
+
+        state = self._build_state(str(word_template), "")
+        state.paper_document = PaperDocument(
+            title="中文文本分类算法",
+            nodes=[PaperNode(title="第1章 绪论", level=1, paragraphs=["绪论段落。"])]
+        )
+
+        result = self.service.render_all(state)
+
+        thesis_path = Path(result.artifacts.thesis_docx or "")
+        self.assertTrue(thesis_path.exists())
+        thesis = Document(str(thesis_path))
+        text = "\n".join(paragraph.text for paragraph in thesis.paragraphs if paragraph.text.strip())
+        self.assertIn("中文文本分类算法", text)
+        self.assertIn("第1章 绪论", text)
+        self.assertNotIn("论文导出降级结果", text)
+        self.assertFalse(any("已降级为最小 DOCX 文档" in warning for warning in state.warnings))
+
+    @unittest.skipIf(Document is None, "python-docx is not installed in the current environment")
+    def test_general_undergraduate_library_template_is_renderable(self) -> None:
+        service = TemplateService()
+        source, manifest = service.choose_default_template(ProjectCreate(topic="中文文本分类算法", paper_type="algorithm"))
+
+        self.assertTrue(Path(source.template_path or "").exists())
+        state = self._build_state(source.template_path or "", "")
+        state.template_source = source
+        state.template_manifest = manifest
+        state.paper_outline = ["摘要", "第1章 绪论", "参考文献"]
+        state.paper_sections = {
+            "摘要": "这是中文摘要。",
+            "第1章 绪论": "这是绪论正文。",
+            "参考文献": "[1] Tester. Demo. 2026.",
+        }
+
+        result = self.service.render_all(state)
+
+        thesis = Document(result.artifacts.thesis_docx)
+        texts = [paragraph.text for paragraph in thesis.paragraphs if paragraph.text.strip()]
+        self.assertIn("中文文本分类算法", texts)
+        self.assertIn("这是中文摘要。", texts)
+        self.assertIn("这是绪论正文。", texts)
 
     def test_literature_review_contains_structured_evidence_fields(self) -> None:
         state = self._build_state("", "")

@@ -61,8 +61,13 @@ function createProviderDraft(index: number): ModelProviderSettings {
     api_key: "",
     priority: index + 1,
     enabled: true,
+    api_mode: "chat_completions",
     models: createEmptyModels(),
   };
+}
+
+function getApiMode(provider: ModelProviderSettings): "chat_completions" | "responses" {
+  return provider.api_mode === "responses" ? "responses" : "chat_completions";
 }
 
 function getProviderKey(provider: ModelProviderSettings, index: number) {
@@ -319,6 +324,18 @@ export function SettingsPage() {
                           updateProvider(index, "priority", Number(event.target.value) || 0)
                         }
                       />
+                    </label>
+                    <label className="field">
+                      <span>API Mode</span>
+                      <select
+                        value={getApiMode(provider)}
+                        onChange={(event) =>
+                          updateProvider(index, "api_mode", event.target.value)
+                        }
+                     >
+                        <option value="chat_completions">Chat Completions (/chat/completions)</option>
+                        <option value="responses">Responses (/responses)</option>
+                      </select>
                     </label>
                     <label className="field checkbox-field">
                       <span>Enabled</span>
