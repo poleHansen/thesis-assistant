@@ -12,10 +12,13 @@ from app.domain import (
     ExperimentPlan,
     InnovationCandidate,
     LiteratureRecord,
+    PaperDocument,
+    PaperNode,
     ProjectState,
     RetrievalSummary,
 )
 from app.model_gateway import ModelGateway
+from app.template_service import DEFAULT_USER_SECTIONS
 from app.utils import slugify, utcnow_iso
 
 
@@ -51,6 +54,27 @@ MILESTONE_THREE_RESULT_FILES = [
     "results/train_metrics.json",
     "results/eval_metrics.json",
     "results/predictions.jsonl",
+]
+DOCX_THESIS_GUIDELINES = {
+    "heading_rules": [
+        "保留论文标题、一级标题、二级标题的层级结构，避免在正文中混入伪标题。",
+        "目录作为独立章节占位，由导出阶段统一渲染，不在正文段落中手写页码。",
+    ],
+    "body_rules": [
+        "正文以完整段落组织，避免使用手工 unicode 项目符号作为论文主体内容。",
+        "实验章节优先写清实验环境、数据集、评价指标、参数设置、主结果、消融分析与复现说明。",
+    ],
+    "figure_table_rules": [
+        "结果表与结果图应提供稳定的表题/图题和紧随其后的分析说明，便于 Word 模板渲染。",
+        "图表说明使用单独段落表达，不把多项解释压缩在同一行。",
+    ],
+    "reference_rules": [
+        "参考文献条目在导出阶段按独立段落组织，不使用项目符号列表。",
+        "引用内容优先集中在相关工作与参考文献章节，避免在封面、目录等位置混入引用。",
+    ],
+}
+DEFAULT_PAPER_OUTLINE = [
+    section for section in DEFAULT_USER_SECTIONS if section not in {"封面", "目录"}
 ]
 
 
@@ -679,7 +703,692 @@ def _format_result_figure_summary(result_figures: object) -> str:
     return "；".join(summaries)
 
 
-def _build_section_content(section: str, state: ProjectState) -> str:
+def _docx_guideline_lines(state: ProjectState) -> list[str]:
+    toc_enabled = bool((state.template_manifest.toc_rules if state.template_manifest else {}).get("enabled", True))
+    lines = [
+        *DOCX_THESIS_GUIDELINES["heading_rules"],
+        *DOCX_THESIS_GUIDELINES["body_rules"],
+        *DOCX_THESIS_GUIDELINES["figure_table_rules"],
+        *DOCX_THESIS_GUIDELINES["reference_rules"],
+    ]
+    if toc_enabled:
+        lines.append("模板已启用目录规则，正文仅保留章节层级，由 DOCX 导出阶段统一生成目录占位。")
+    return lines
+
+
+def _docx_render_profile(state: ProjectState) -> dict[str, object]:
+    toc_rules = state.template_manifest.toc_rules if state.template_manifest else {"enabled": True, "depth": 3}
+    return {
+        "heading_levels": ["title", "chapter", "section"],
+        "toc_enabled": bool(toc_rules.get("enabled", True)),
+        "toc_depth": int(toc_rules.get("depth", 3) or 3),
+        "body_mode": "paragraph-first",
+        "table_caption_required": True,
+        "figure_caption_required": True,
+        "reference_paragraph_mode": True,
+    }
+
+
+def _extract_section_index(section: str) -> str:
+    match = re.search(r"第\s*(\d+)\s*章", section)
+    if match:
+        return match.group(1)
+    if "实验" in section:
+        return "4"
+    if "方法" in section:
+        return "3"
+    return "X"
+
+
+def _docx_caption_guidance(section: str, kind: str, index: int, title: str, summary: str = "") -> str:
+    section_index = _extract_section_index(section)
+    label = "表" if kind == "table" else "图"
+    suffix = f"{label} {section_index}-{index} {title}"
+    if summary:
+        return f"{suffix}。{summary}"
+    return f"{suffix}。"
+
+
+def _build_paper_document(state: ProjectState, gateway: ModelGateway | None = None) -> PaperDocument:
+    title = state.request.topic or "毕业论文"
+    nodes: list[PaperNode] = []
+    for section in state.paper_outline:
+        nodes.append(
+            PaperNode(
+                title=section,
+                level=1,
+                paragraphs=[] if section not in {"封面", "目录"} else [_generate_section_text(section, state, gateway)],
+                children=_build_section_children(section, state, gateway),
+                source_refs=_build_section_sources(section, state),
+            )
+        )
+    return PaperDocument(title=title, nodes=nodes)
+
+
+def _build_section_children(section: str, state: ProjectState, gateway: ModelGateway | None = None) -> list[PaperNode]:
+    subsection_titles = _default_subsection_titles(section)
+    if not subsection_titles:
+        paragraphs = [_generate_section_text(section, state, gateway)]
+        return [PaperNode(title="正文", level=2, paragraphs=paragraphs, source_refs=_build_section_sources(section, state))]
+    children: list[PaperNode] = []
+    for title in subsection_titles:
+        children.append(
+            PaperNode(
+                title=title,
+                level=2,
+                paragraphs=_generate_subsection_paragraphs(section, title, state, gateway),
+                source_refs=_build_subsection_sources(section, title, state),
+            )
+        )
+    return children
+
+
+def _generate_section_text(section: str, state: ProjectState, gateway: ModelGateway | None = None) -> str:
+    fallback_text = _build_rule_based_section_content(section, state)
+    if gateway is None or section in {"封面", "目录", "参考文献"}:
+        return fallback_text
+
+    cache_key = f"section::{section}"
+    cached_text = _get_cached_paper_generation(state, cache_key)
+    if cached_text:
+        return cached_text
+
+    prompt = _build_section_generation_prompt(section, state, fallback_text)
+    try:
+        result = gateway.complete(
+            "writer",
+            prompt,
+            system_prompt="You write formal Chinese undergraduate thesis sections with factual grounding and DOCX-friendly paragraph structure.",
+        )
+        generated_text = _normalize_generated_thesis_text(result.content)
+        if not generated_text:
+            generated_text = fallback_text
+        _set_cached_paper_generation(state, cache_key, generated_text)
+        state.result_schema.setdefault("paper_generation_trace", []).append(
+            {
+                "scope": "section",
+                "section": section,
+                "provider": result.provider,
+                "model": result.model,
+                "fallback_used": result.fallback_used,
+            }
+        )
+        return generated_text
+    except Exception as exc:
+        state.warnings.append(f"章节 {section} 生成失败，已回退规则文本：{exc}")
+        return fallback_text
+
+
+def _generate_subsection_paragraphs(
+    section: str,
+    subsection: str,
+    state: ProjectState,
+    gateway: ModelGateway | None = None,
+) -> list[str]:
+    fallback_paragraphs = _build_rule_based_subsection_paragraphs(section, subsection, state)
+    if gateway is None:
+        return fallback_paragraphs
+
+    cache_key = f"subsection::{section}::{subsection}"
+    cached_text = _get_cached_paper_generation(state, cache_key)
+    if cached_text:
+        return _ensure_required_subsection_paragraphs(section, subsection, _split_generated_paragraphs(cached_text), fallback_paragraphs, state)
+
+    prompt = _build_subsection_generation_prompt(section, subsection, state, fallback_paragraphs)
+    try:
+        result = gateway.complete(
+            "writer",
+            prompt,
+            system_prompt="You write formal Chinese undergraduate thesis subsections with evidence-aware academic prose and stable paragraph breaks.",
+        )
+        generated_text = _normalize_generated_thesis_text(result.content)
+        if not generated_text:
+            return fallback_paragraphs
+        _set_cached_paper_generation(state, cache_key, generated_text)
+        state.result_schema.setdefault("paper_generation_trace", []).append(
+            {
+                "scope": "subsection",
+                "section": section,
+                "subsection": subsection,
+                "provider": result.provider,
+                "model": result.model,
+                "fallback_used": result.fallback_used,
+            }
+        )
+        return _ensure_required_subsection_paragraphs(section, subsection, _split_generated_paragraphs(generated_text), fallback_paragraphs, state)
+    except Exception as exc:
+        state.warnings.append(f"小节 {section}/{subsection} 生成失败，已回退规则文本：{exc}")
+        return fallback_paragraphs
+
+
+def _get_cached_paper_generation(state: ProjectState, cache_key: str) -> str:
+    cache = state.result_schema.setdefault("paper_generation_cache", {})
+    value = cache.get(cache_key, "")
+    return str(value).strip()
+
+
+def _set_cached_paper_generation(state: ProjectState, cache_key: str, content: str) -> None:
+    cache = state.result_schema.setdefault("paper_generation_cache", {})
+    cache[cache_key] = content
+
+
+def _normalize_generated_thesis_text(content: str) -> str:
+    if not isinstance(content, str):
+        return ""
+    text = content.replace("\r\n", "\n")
+    text = re.sub(r"^```[a-zA-Z0-9_-]*\s*", "", text.strip())
+    text = re.sub(r"\n```$", "", text).strip()
+    return text
+
+
+def _split_generated_paragraphs(content: str) -> list[str]:
+    parts = [item.strip() for item in re.split(r"\n\s*\n+", content) if item.strip()]
+    if parts:
+        return parts
+    single_line = content.strip()
+    return [single_line] if single_line else []
+
+
+def _paper_generation_context(state: ProjectState) -> str:
+    innovation = state.selected_innovation.claim if state.selected_innovation else "待进一步确定的创新方案"
+    plan = state.experiment_plan
+    survey_summary = _clean_text(str(state.result_schema.get("survey_summary", "")))
+    result_summary = _clean_text(str(state.result_schema.get("result_summary_for_paper", "")))
+    result_analysis = _clean_text(str(state.result_schema.get("result_analysis_text", "")))
+    literature_titles = [record.title for record in state.literature_records[:5] if record.title]
+    context_lines = [
+        f"论文题目：{state.request.topic}",
+        f"交付模式：{state.request.delivery_mode}",
+        f"核心创新：{innovation}",
+        f"实验计划摘要：{_format_plan_summary(plan)}",
+    ]
+    if survey_summary:
+        context_lines.append(f"文献综述摘要：{survey_summary}")
+    if result_summary:
+        context_lines.append(f"论文结果摘要：{result_summary}")
+    if result_analysis:
+        context_lines.append(f"结果分析摘要：{result_analysis}")
+    if literature_titles:
+        context_lines.append(f"代表文献：{'；'.join(literature_titles)}")
+    if plan:
+        if plan.dataset:
+            context_lines.append(f"数据集：{'、'.join(plan.dataset[:4])}")
+        if plan.baselines:
+            context_lines.append(f"对比基线：{'、'.join(plan.baselines[:4])}")
+        if plan.metrics:
+            context_lines.append(f"评价指标：{'、'.join(plan.metrics[:4])}")
+        if plan.parameters:
+            context_lines.append(f"关键参数：{'、'.join(plan.parameters[:4])}")
+        if plan.result_files:
+            context_lines.append(f"结果文件：{'、'.join(plan.result_files[:4])}")
+    return "\n".join(context_lines)
+
+
+def _build_section_generation_prompt(section: str, state: ProjectState, fallback_text: str) -> str:
+    return (
+        f"{_paper_generation_context(state)}\n"
+        f"当前章节：{section}\n"
+        "写作要求：\n"
+        "1. 输出正式的中文本科论文行文。\n"
+        "2. 只输出该章节正文，不要写解释、不要写 Markdown 代码块。\n"
+        "3. 不要编造不存在的实验数值；如果是初稿模式，只能写计划、预期和待补充项。\n"
+        "4. 保持 DOCX 友好，使用自然段，不使用项目符号列表。\n"
+        f"可参考的事实草稿：{fallback_text}"
+    )
+
+
+def _build_subsection_generation_prompt(
+    section: str,
+    subsection: str,
+    state: ProjectState,
+    fallback_paragraphs: list[str],
+) -> str:
+    fallback_text = "\n\n".join(fallback_paragraphs)
+    return (
+        f"{_paper_generation_context(state)}\n"
+        f"当前章节：{section}\n"
+        f"当前小节：{subsection}\n"
+        "写作要求：\n"
+        "1. 输出 2 到 4 个自然段的中文论文正文。\n"
+        "2. 不要输出小节标题，不要输出列表，不要输出代码块。\n"
+        "3. 如果处于初稿模式，不要写成已经完成真实实验的口吻。\n"
+        "4. 保留与实验设计、图表题注、结果文件、复现说明相关的关键信息。\n"
+        f"可参考的事实草稿：{fallback_text}"
+    )
+
+
+def _ensure_required_subsection_paragraphs(
+    section: str,
+    subsection: str,
+    generated_paragraphs: list[str],
+    fallback_paragraphs: list[str],
+    state: ProjectState,
+) -> list[str]:
+    paragraphs = [item.strip() for item in generated_paragraphs if item.strip()]
+    if not paragraphs:
+        paragraphs = list(fallback_paragraphs)
+
+    required_fragments: list[str] = []
+    result_summary = str(state.result_schema.get("result_summary_for_paper", "")).strip()
+    if section == "第4章 实验结果与分析" and subsection == "主结果分析" and result_summary:
+        required_fragments.append(result_summary)
+    if "实验" in section and subsection == "主结果分析" and not _is_draft_mode(state):
+        required_fragments.append(
+            _docx_caption_guidance(
+                section,
+                "table",
+                1,
+                "主结果对比表",
+                "建议将主指标、对比基线和提升幅度整理为独立表题，并在表后追加 1 段结果分析。",
+            )
+        )
+        required_fragments.append(
+            _docx_caption_guidance(
+                section,
+                "figure",
+                1,
+                "训练曲线",
+                "建议在图后单独说明收敛趋势、稳定性变化与代表性现象。",
+            )
+        )
+    if "参考文献" in section:
+        required_fragments.append("参考文献导出时按独立段落组织，不使用项目符号列表，以便和学校 Word 模板的正文样式保持一致。")
+
+    for fragment in required_fragments:
+        if fragment and not any(fragment in paragraph for paragraph in paragraphs):
+            paragraphs.append(fragment)
+    if not paragraphs:
+        return fallback_paragraphs
+    return paragraphs
+
+
+def _default_subsection_titles(section: str) -> list[str]:
+    if section in {"封面", "目录", "参考文献", "致谢", "附录"}:
+        return []
+    if "摘要" in section or section == "Abstract":
+        return ["研究背景与目标", "方法概述", "结果与贡献"]
+    if "绪论" in section or "引言" in section:
+        return ["研究背景", "问题定义", "研究内容与论文结构"]
+    if "相关工作" in section or "理论基础" in section:
+        return ["主流研究路线", "数据集与评测指标", "现有不足"]
+    if "方法" in section:
+        return ["总体思路", "关键模块设计", "训练与实现流程"]
+    if "实验" in section:
+        return ["实验环境", "数据集与预处理", "评价指标与对比方法", "参数设置", "主结果分析", "消融与误差分析", "复现说明"]
+    if "结论" in section or "展望" in section:
+        return ["工作总结", "研究不足", "后续展望"]
+    return ["研究内容", "实现过程", "小结"]
+
+
+def _build_section_sources(section: str, state: ProjectState) -> list[str]:
+    sources: list[str] = []
+    if state.selected_innovation:
+        sources.extend(state.selected_innovation.supporting_papers[:2])
+    if "相关工作" in section or "理论基础" in section:
+        sources.extend(record.title for record in state.literature_records[:3] if record.title)
+    if "实验" in section and state.experiment_plan:
+        sources.extend(state.experiment_plan.result_files[:2])
+    return [item for item in sources if item]
+
+
+def _build_subsection_sources(section: str, subsection: str, state: ProjectState) -> list[str]:
+    sources = _build_section_sources(section, state)
+    if "实验" in section and state.experiment_plan:
+        if "数据集" in subsection:
+            sources.extend(state.experiment_plan.dataset[:2])
+        if "指标" in subsection or "对比" in subsection:
+            sources.extend(state.experiment_plan.metrics[:2])
+            sources.extend(state.experiment_plan.baselines[:2])
+        if "参数" in subsection:
+            sources.extend(state.experiment_plan.parameters[:2])
+    return [item for item in sources if item]
+
+
+def _build_rule_based_subsection_paragraphs(section: str, subsection: str, state: ProjectState) -> list[str]:
+    topic = state.request.topic
+    innovation = state.selected_innovation.claim if state.selected_innovation else "候选创新方案"
+    plan = state.experiment_plan
+    draft_mode = _is_draft_mode(state)
+    survey_summary = str(state.result_schema.get("survey_summary", "")).strip()
+    result_analysis = str(state.result_schema.get("result_analysis_text", "")).strip()
+    paper_result_summary = str(state.result_schema.get("result_summary_for_paper", "")).strip()
+    record_titles = [record.title for record in state.literature_records[:3] if record.title]
+    paragraphs: list[str] = []
+
+    if "摘要" in section or section == "Abstract":
+        if subsection == "研究背景与目标":
+            paragraphs = [
+                f"本文围绕 {topic} 展开研究，结合当前算法类毕业论文常见的研究需求，明确了问题场景、任务目标与预期交付范围。",
+                f"在文献检索与差异分析的基础上，系统筛选出 {innovation} 作为当前版本的核心研究方向。",
+            ]
+        elif subsection == "方法概述":
+            paragraphs = [
+                _generate_section_text("方法", state),
+                "系统同时产出实验步骤文档、最小可运行代码包与答辩材料，确保论文内容与实现链路保持一致。",
+            ]
+        else:
+            paragraphs = [
+                paper_result_summary or result_analysis or "当前版本重点交付论文结构、实验设计、实验步骤与代码骨架，真实实验结果将在完成本地实验后回填。",
+                "本文的主要贡献在于将选题分析、实验设计、代码交付与论文写作组织为统一流程，并为后续完善真实实验结果预留了清晰锚点。",
+            ]
+    elif "绪论" in section or "引言" in section:
+        if subsection == "研究背景":
+            paragraphs = [
+                f"{topic} 具有明确的工程应用价值和教学研究价值，适合作为算法类毕业论文的研究对象。",
+                f"随着相关任务对可复现性、实验完整性和文档规范性的要求提升，仅靠简单模板拼接已经难以满足论文交付要求。",
+            ]
+        elif subsection == "问题定义":
+            paragraphs = [
+                f"本文关注的问题是如何围绕 {topic} 建立可验证、可复现的研究流程，并将研究目标聚焦到 {innovation}。",
+                "对应的问题定义不仅包括方法设计本身，还包括实验设计、结果记录、代码产物与论文表达之间的一致性。",
+            ]
+        else:
+            paragraphs = [
+                "论文整体结构按照“研究背景—相关工作—方法设计—实验分析—总结展望”的顺序展开，以保证论证逻辑清晰。",
+                "后续章节将分别说明文献依据、创新方案、实验设置、结果组织方式以及复现交付路径。",
+            ]
+    elif "相关工作" in section or "理论基础" in section:
+        if subsection == "主流研究路线":
+            paragraphs = [
+                survey_summary or (f"现有研究主要围绕 {'、'.join(record_titles) if record_titles else topic} 等代表性工作展开，常见路线包括模型结构优化、特征表达增强与训练策略调整。"),
+                "从已检索文献可以看出，主流方法通常优先优化常规性能指标，并在公开数据集上完成验证。",
+            ]
+        elif subsection == "数据集与评测指标":
+            dataset_text = "、".join(plan.dataset[:3]) if plan else "公开数据集"
+            metric_text = "、".join(plan.metrics[:4]) if plan else "常规评价指标"
+            paragraphs = [
+                f"已有研究普遍基于 {dataset_text} 等数据集开展实验，并围绕 {metric_text} 等指标进行对比分析。",
+                "这类评测设置便于横向比较，但也容易导致论文在场景覆盖、鲁棒性分析和误差解释方面不足。",
+            ]
+        else:
+            paragraphs = [
+                "现有工作在方法复杂度、实验深度与结果解释方面仍存在不平衡，部分论文对真实应用约束、消融实验或误差分析涉及较少。",
+                "这些不足为本文后续的创新点选择和实验设计提供了明确切入点。",
+            ]
+    elif "方法" in section:
+        if subsection == "总体思路":
+            paragraphs = [
+                f"本文方法以 {innovation} 为中心展开，目标是在保证本科毕业论文可完成性的前提下，形成具有证据支撑的研究方案。",
+                _generate_section_text("方法", state),
+            ]
+        elif subsection == "关键模块设计":
+            parameter_text = "、".join(plan.parameters[:4]) if plan and plan.parameters else "核心参数与模块配置"
+            paragraphs = [
+                f"关键模块设计围绕数据处理、模型结构与训练控制三部分展开，其中重点关注 {parameter_text} 等可直接影响实验表现的要素。",
+                "相较于仅给出方法名称的模板化写法，本文进一步强调模块职责、输入输出关系以及与创新目标的对应关系。",
+            ]
+        else:
+            run_commands = "；".join(f"{key}: {value}" for key, value in (plan.run_commands.items() if plan else [])) or "训练、评估与推理命令将在代码 README 中统一给出"
+            paragraphs = [
+                "训练与实现流程按照“数据准备—模型训练—模型评估—结果记录”的顺序组织，保证论文描述与代码执行路径一致。",
+                run_commands,
+            ]
+    elif "实验" in section:
+        dataset_text = "、".join(plan.dataset[:3]) if plan else "待补充数据集"
+        baseline_text = "、".join(plan.baselines[:3]) if plan else "待补充基线"
+        metric_text = "、".join(plan.metrics[:4]) if plan else "待补充指标"
+        parameter_text = "、".join(plan.parameters[:4]) if plan and plan.parameters else "待补充参数"
+        result_files = "、".join(plan.result_files[:3]) if plan and plan.result_files else "results/ 目录"
+        result_table_summary = _format_result_table_summary(state.result_schema.get("result_tables", []))
+        result_figure_summary = _format_result_figure_summary(state.result_schema.get("result_figures", []))
+        if subsection == "实验环境":
+            env_text = "、".join(plan.environment[:4]) if plan else "Python 运行环境与依赖"
+            paragraphs = [
+                f"实验环境按照 {env_text} 进行配置，确保训练、评估和推理脚本可以在同一套依赖下执行。",
+                "为降低交付成本，当前代码包优先保证最小可运行性，并通过 README 与实验步骤文档同步说明环境准备方式。",
+            ]
+        elif subsection == "数据集与预处理":
+            paragraphs = [
+                f"实验使用 {dataset_text} 等数据集开展验证，并在数据准备阶段统一完成清洗、切分与格式转换。",
+                "对应的数据处理逻辑将在代码包的数据加载模块中落地，以保证论文描述与实现细节一致。",
+            ]
+        elif subsection == "评价指标与对比方法":
+            paragraphs = [
+                f"实验围绕 {metric_text} 等指标开展评测，并将 {baseline_text} 作为主要对比方法，以衡量所提方案的有效性。",
+                "除主指标外，论文还应保留对评价维度边界的说明，避免只给出单一指标而缺少结果解释。",
+            ]
+        elif subsection == "参数设置":
+            paragraphs = [
+                f"关键实验参数包括 {parameter_text}，这些参数将在配置文件中统一管理，以提高复现实验时的可控性。",
+                "参数设置部分不仅用于说明运行条件，也用于支撑后续消融实验与误差分析的解释。",
+            ]
+        elif subsection == "主结果分析":
+            paragraphs = [
+                paper_result_summary or result_analysis or ("当前处于初稿模式，主结果部分暂以结果记录模板占位，真实实验结果、结果表和图表由用户完成实验后补充。" if draft_mode else "主结果部分将围绕基线对比、指标变化和关键现象进行定量分析。"),
+                f"对应结果文件统一写入 {result_files}，便于将实验输出同步回填到论文、答辩 PPT 与结果分析文档中。",
+            ]
+            if draft_mode:
+                paragraphs.append("真实实验结果、结果表和图表由用户完成实验后补充，当前仅保留结果回填入口与结构位置。")
+            else:
+                if result_table_summary:
+                    paragraphs.append(result_table_summary)
+                if result_figure_summary:
+                    paragraphs.append(result_figure_summary)
+                paragraphs.append(
+                    _docx_caption_guidance(
+                        section,
+                        "table",
+                        1,
+                        "主结果对比表",
+                        "建议将主指标、对比基线和提升幅度整理为独立表题，并在表后追加 1 段结果分析。",
+                    )
+                )
+                paragraphs.append(
+                    _docx_caption_guidance(
+                        section,
+                        "figure",
+                        1,
+                        "训练曲线",
+                        "建议在图后单独说明收敛趋势、稳定性变化与代表性现象。",
+                    )
+                )
+        elif subsection == "消融与误差分析":
+            paragraphs = [
+                "消融实验用于验证关键模块或策略的实际贡献，误差分析用于说明模型在边界样本、复杂场景或少数类上的表现差异。",
+                ("当前版本先保留消融与误差分析的结构位置，待完成本地实验后再补充具体表格、图表与案例说明。" if draft_mode else "正式版本将结合消融表、失败案例和必要图示给出更完整的实验解释。"),
+            ]
+            if not draft_mode:
+                paragraphs.append(
+                    _docx_caption_guidance(
+                        section,
+                        "table",
+                        2,
+                        "消融实验结果",
+                        "建议将关键模块去除后的指标变化整理为独立表题，并在表后解释性能差异来源。",
+                    )
+                )
+                paragraphs.append(
+                    _docx_caption_guidance(
+                        section,
+                        "figure",
+                        2,
+                        "误差案例可视化",
+                        "建议补充代表性失败样例，并在图后说明错误类型与改进方向。",
+                    )
+                )
+        else:
+            paragraphs = [
+                "复现说明部分与实验步骤文档、代码 README 保持一致，统一说明训练命令、评估命令、结果文件位置与注意事项。",
+                f"建议在复现实验时优先核对 {result_files} 等核心产物路径，以避免论文描述与实际文件不一致。",
+            ]
+    elif "结论" in section or "展望" in section:
+        if subsection == "工作总结":
+            paragraphs = [
+                f"本文围绕 {topic} 构建了从文献分析、创新点筛选、实验设计到论文与代码交付的完整闭环。",
+                "相较于仅输出模板化章节文本的方式，当前方案更强调论文结构完整性与交付物一致性。",
+            ]
+        elif subsection == "研究不足":
+            paragraphs = [
+                "当前版本仍以最小可运行闭环为主要目标，真实实验结果、复杂图表与更高保真模板适配仍需继续完善。",
+                "此外，不同学校模板在页眉页脚、目录样式和章节编号细节上存在差异，后续还需要增加更细粒度适配。",
+            ]
+        else:
+            paragraphs = [
+                "后续工作可继续补强真实实验执行、结果自动回填、更丰富的图表渲染以及更严格的一致性检查。",
+                "在此基础上，系统还可以进一步扩展到更多论文类型和更复杂的模板场景。",
+            ]
+    elif "参考文献" in section:
+        titles = [record.title for record in state.literature_records[:6] if record.title]
+        paragraphs = [
+            "参考文献章节汇总文献检索与引用绑定结果，以下条目将在渲染阶段整理为正式参考文献列表。",
+            "参考文献导出时按独立段落组织，不使用项目符号列表，以便和学校 Word 模板的正文样式保持一致。",
+        ]
+        if titles:
+            paragraphs.append("当前可用的代表性文献包括：" + "；".join(titles) + "。")
+    else:
+        paragraphs = [
+            f"本节围绕 {topic} 展开说明，并结合当前流程中的研究证据、实验计划与交付约束组织正文内容。",
+            "为保证论文结构完整，即使某些细节尚待补充，也会保留明确的小节位置与后续完善提示。",
+        ]
+    return [item for item in paragraphs if item]
+
+
+def _paper_document_to_section_map(document: PaperDocument | None) -> dict[str, str]:
+    if not document:
+        return {}
+    sections: dict[str, str] = {}
+    for node in document.nodes:
+        sections[node.title] = _render_paper_node_snapshot(node)
+    return sections
+
+
+def _render_paper_node_snapshot(node: PaperNode) -> str:
+    parts: list[str] = []
+    for paragraph in node.paragraphs:
+        if paragraph.strip():
+            parts.append(paragraph.strip())
+    for child in node.children:
+        parts.append(f"### {child.title}")
+        for paragraph in child.paragraphs:
+            if paragraph.strip():
+                parts.append(paragraph.strip())
+        for grandchild in child.children:
+            parts.append(f"#### {grandchild.title}")
+            parts.extend(item.strip() for item in grandchild.paragraphs if item.strip())
+    return "\n\n".join(parts).strip()
+
+
+def _sync_paper_section_snapshot(state: ProjectState) -> None:
+    state.paper_sections = _paper_document_to_section_map(state.paper_document)
+
+
+def _is_body_section(section: str) -> bool:
+    return section not in {"封面", "目录", "参考文献", "致谢", "附录"}
+
+
+def _body_text_length(state: ProjectState) -> int:
+    total = 0
+    for title, content in state.paper_sections.items():
+        if not _is_body_section(title):
+            continue
+        normalized = re.sub(r"#+\s*", "", str(content))
+        normalized = re.sub(r"\s+", "", normalized)
+        total += len(normalized)
+    return total
+
+
+def _collect_body_sections(document: PaperDocument | None) -> list[PaperNode]:
+    if not document:
+        return []
+    return [node for node in document.nodes if _is_body_section(node.title)]
+
+
+def _iter_subsection_nodes(section_node: PaperNode) -> list[PaperNode]:
+    if section_node.children:
+        return [child for child in section_node.children if child.level >= 2]
+    return [section_node]
+
+
+def _build_length_expansion_prompt(
+    state: ProjectState,
+    section: str,
+    subsection: str,
+    target_chars: int,
+    existing_text: str,
+) -> str:
+    return (
+        f"{_paper_generation_context(state)}\n"
+        f"当前章节：{section}\n"
+        f"当前小节：{subsection}\n"
+        f"当前正文长度不足，需补写约 {target_chars} 个中文字符。\n"
+        "补写要求：\n"
+        "1. 只补充正文自然段，不重复小节标题。\n"
+        "2. 保持本科论文语气，延续已有内容。\n"
+        "3. 不编造不存在的实验数值；初稿模式只能写设计依据、分析思路、预期现象和待补充项。\n"
+        "4. 不使用列表，不输出代码块，不输出提示语。\n"
+        f"已有内容：{existing_text}"
+    )
+
+
+def _expand_paper_body_to_min_length(
+    state: ProjectState,
+    gateway: ModelGateway,
+    *,
+    min_length: int = 8000,
+) -> None:
+    current_length = _body_text_length(state)
+    state.result_schema["paper_body_char_count"] = current_length
+    state.result_schema["paper_body_min_chars"] = min_length
+    if current_length >= min_length:
+        state.result_schema["paper_body_min_length_satisfied"] = True
+        return
+
+    body_sections = _collect_body_sections(state.paper_document)
+    subsection_nodes: list[tuple[PaperNode, PaperNode]] = []
+    for section_node in body_sections:
+        for subsection_node in _iter_subsection_nodes(section_node):
+            subsection_nodes.append((section_node, subsection_node))
+
+    if not subsection_nodes:
+        state.result_schema["paper_body_min_length_satisfied"] = False
+        state.warnings.append("正文长度不足，且未找到可扩写的正文章节。")
+        return
+
+    remaining_gap = min_length - current_length
+    for index, (section_node, subsection_node) in enumerate(subsection_nodes):
+        if remaining_gap <= 0:
+            break
+        slots_left = max(1, len(subsection_nodes) - index)
+        target_chars = max(240, remaining_gap // slots_left)
+        existing_text = "\n\n".join(paragraph for paragraph in subsection_node.paragraphs if paragraph.strip())
+        prompt = _build_length_expansion_prompt(state, section_node.title, subsection_node.title, target_chars, existing_text)
+        try:
+            result = gateway.complete(
+                "writer",
+                prompt,
+                system_prompt="You expand Chinese undergraduate thesis body text with coherent, evidence-aware academic prose.",
+            )
+            addition = _normalize_generated_thesis_text(result.content)
+        except Exception as exc:
+            state.warnings.append(f"正文补写失败，已跳过 {section_node.title}/{subsection_node.title}：{exc}")
+            continue
+
+        addition_paragraphs = _split_generated_paragraphs(addition)
+        if not addition_paragraphs:
+            continue
+        subsection_node.paragraphs.extend(addition_paragraphs)
+        state.result_schema.setdefault("paper_generation_trace", []).append(
+            {
+                "scope": "expansion",
+                "section": section_node.title,
+                "subsection": subsection_node.title,
+                "provider": result.provider,
+                "model": result.model,
+                "fallback_used": result.fallback_used,
+                "target_chars": target_chars,
+            }
+        )
+        _sync_paper_section_snapshot(state)
+        current_length = _body_text_length(state)
+        remaining_gap = min_length - current_length
+
+    state.result_schema["paper_body_char_count"] = current_length
+    state.result_schema["paper_body_min_length_satisfied"] = current_length >= min_length
+    if current_length < min_length:
+        state.warnings.append(f"正文长度仍不足 8000 字，当前约为 {current_length} 字。")
+
+
+def _build_rule_based_section_content(section: str, state: ProjectState) -> str:
     topic = state.request.topic
     innovation = state.selected_innovation.claim if state.selected_innovation else "候选创新方案"
     draft_mode = _is_draft_mode(state)
@@ -754,7 +1463,7 @@ def _build_section_content(section: str, state: ProjectState) -> str:
         ]
         return "".join(pieces)
     if "参考文献" in section:
-        return "参考文献由文献检索记录与引用绑定结果共同生成。"
+        return "参考文献由文献检索记录与引用绑定结果共同生成，并在 DOCX 导出时按独立段落整理为正式条目。"
     if "绪论" in section or "引言" in section:
         return (
             f"本章围绕 {topic} 的研究背景、问题定义与应用价值展开，说明选题的工程需求与学术意义。"
@@ -3035,10 +3744,10 @@ class OutlineWriterAgent(BaseAgent):
     task_type = "writer"
 
     def run(self, state: ProjectState) -> ProjectState:
-        if state.template_manifest:
-            state.paper_outline = state.template_manifest.section_mapping
-        else:
-            state.paper_outline = ["摘要", "引言", "相关工作", "方法", "实验", "结论", "参考文献"]
+        state.paper_outline = list(DEFAULT_PAPER_OUTLINE)
+        state.result_schema["docx_writing_guidelines"] = _docx_guideline_lines(state)
+        state.result_schema["docx_render_profile"] = _docx_render_profile(state)
+        state.paper_document = _build_paper_document(state)
         self.log(state, f"prepared outline with {len(state.paper_outline)} sections")
         return state
 
@@ -3048,8 +3757,11 @@ class SectionWriterAgent(BaseAgent):
     task_type = "writer"
 
     def run(self, state: ProjectState) -> ProjectState:
-        for section in state.paper_outline:
-            state.paper_sections[section] = _build_section_content(section, state)
+        state.result_schema["docx_writing_guidelines"] = _docx_guideline_lines(state)
+        state.result_schema["docx_render_profile"] = _docx_render_profile(state)
+        state.paper_document = _build_paper_document(state, self.gateway)
+        _sync_paper_section_snapshot(state)
+        _expand_paper_body_to_min_length(state, self.gateway)
         self.log(state, "generated section drafts")
         return state
 
@@ -3081,6 +3793,11 @@ class CitationBinderAgent(BaseAgent):
             state.paper_sections[key] = f"{state.paper_sections[key]}\n\n" + "\n".join(
                 references
             )
+        if state.paper_document:
+            for node in state.paper_document.nodes:
+                if "相关工作" in node.title or node.title == "参考文献":
+                    node.paragraphs.append("\n".join(references))
+            _sync_paper_section_snapshot(state)
         self.log(state, f"bound {len(references)} references")
         return state
 
@@ -3116,6 +3833,11 @@ class ConsistencyCheckerAgent(BaseAgent):
             experiment_key = next((key for key in state.paper_sections if "实验" in key), None)
             if experiment_key and "README" not in state.paper_sections[experiment_key]:
                 state.paper_sections[experiment_key] += "\n\n实验复现命令、结果文件与 README 保持一致。"
+                if state.paper_document:
+                    for node in state.paper_document.nodes:
+                        if node.title == experiment_key or "实验" in node.title:
+                            node.paragraphs.append("实验复现命令、结果文件与 README 保持一致。")
+                            break
         for item in consistency_summary.get("findings", []):
             if not isinstance(item, dict) or item.get("aligned"):
                 continue

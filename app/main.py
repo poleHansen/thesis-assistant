@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from uuid import uuid4
+import mimetypes
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -190,6 +191,26 @@ def run_project(project_id: str) -> dict:
     }
 
 
+@app.post("/projects/{project_id}/repair")
+def repair_project(project_id: str) -> dict:
+    state = repository.get(project_id)
+    if not state:
+        raise HTTPException(status_code=404, detail="Project not found")
+    try:
+        updated = supervisor.repair(state)
+    except Exception as exc:
+        state.status = "failed"
+        state.warnings.append(str(exc))
+        repository.save(state)
+        raise HTTPException(status_code=500, detail=f"Repair failed: {exc}") from exc
+    return {
+        "project_id": project_id,
+        "status": updated.status,
+        "workflow_outcome": updated.workflow_outcome,
+        "remediation_summary": to_plain_data(updated.result_schema.get("remediation_summary", {})),
+    }
+
+
 @app.get("/projects/{project_id}/artifacts")
 def list_artifacts(project_id: str) -> dict:
     state = repository.get(project_id)
@@ -210,4 +231,15 @@ def download_artifact(project_id: str, artifact_name: str) -> FileResponse:
     file_path = Path(path)
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="Artifact file missing")
-    return FileResponse(file_path)
+    if artifact_name == "thesis_docx" and file_path.suffix.lower() != ".docx":
+        raise HTTPException(
+            status_code=409,
+            detail="Legacy thesis artifact is markdown; please rerun artifact generation to produce a .docx file.",
+        )
+    media_type, _ = mimetypes.guess_type(file_path.name)
+    media_type = media_type or "application/octet-stream"
+    return FileResponse(
+        file_path,
+        filename=file_path.name,
+        media_type=media_type,
+    )

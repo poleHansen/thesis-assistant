@@ -4,10 +4,13 @@ import { statusText } from "../lib/format";
 interface RunStatusCardProps {
   project?: ProjectState;
   running?: boolean;
+  repairing?: boolean;
+  hasBlockingFindings?: boolean;
   onRun: () => Promise<void>;
+  onRepair?: () => Promise<void>;
 }
 
-export function RunStatusCard({ project, running, onRun }: RunStatusCardProps) {
+export function RunStatusCard({ project, running, repairing, hasBlockingFindings, onRun, onRepair }: RunStatusCardProps) {
   const status = project?.status ?? "created";
   const workflowPhase = project?.workflow_phase ?? "intake";
   const workflowOutcome = project?.workflow_outcome ?? "not_started";
@@ -42,6 +45,17 @@ export function RunStatusCard({ project, running, onRun }: RunStatusCardProps) {
       >
         {running || status === "running" ? "运行中..." : "启动生成"}
       </button>
+      {hasBlockingFindings && onRepair ? (
+        <button
+          className="button button--ghost"
+          disabled={!project || Boolean(repairing) || status === "running"}
+          onClick={() => {
+            void onRepair();
+          }}
+        >
+          {repairing ? "修复中..." : "自动修复并复检"}
+        </button>
+      ) : null}
     </section>
   );
 }

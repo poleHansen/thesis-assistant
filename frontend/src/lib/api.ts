@@ -6,6 +6,7 @@ import type {
   ProjectCreate,
   ProjectListItem,
   ProjectState,
+  RemediationSummary,
   UploadKind,
   WorkflowStateSummary,
 } from "./types";
@@ -78,10 +79,63 @@ export function runProject(projectId: string) {
   );
 }
 
+export function repairProject(projectId: string) {
+  return requestJson<{ project_id: string; status: string; workflow_outcome: string; remediation_summary: RemediationSummary }>(
+    `${API_BASE}/projects/${projectId}/repair`,
+    { method: "POST" },
+  );
+}
+
 export function listArtifacts(projectId: string) {
   return requestJson<ArtifactBundle>(`${API_BASE}/projects/${projectId}/artifacts`);
 }
 
 export function getArtifactDownloadUrl(projectId: string, artifactName: keyof ArtifactBundle) {
   return `${API_BASE}/projects/${projectId}/artifacts/${artifactName}`;
+}
+
+const artifactFilenameFallback: Record<keyof ArtifactBundle, string> = {
+  literature_review: "literature_review.xlsx",
+  innovation_report: "innovation_report.md",
+  experiment_plan: "experiment_plan.docx",
+  procedure: "procedure.docx",
+  thesis_docx: "thesis.docx",
+  thesis_pdf: "thesis.pdf",
+  code_zip: "code_bundle.zip",
+  defense_pptx: "defense.pptx",
+  qa_report: "qa_report.json",
+};
+
+function getFilenameFromDisposition(contentDisposition: string | null) {
+  if (!contentDisposition) {
+    return null;
+  }
+  const utf8Match = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match?.[1]) {
+    return decodeURIComponent(utf8Match[1]);
+  }
+  const asciiMatch = contentDisposition.match(/filename="?([^";]+)"?/i);
+  return asciiMatch?.[1] ?? null;
+}
+
+export async function downloadArtifact(projectId: string, artifactName: keyof ArtifactBundle) {
+  const response = await fetch(getArtifactDownloadUrl(projectId, artifactName));
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || `Request failed with status ${response.status}`);
+  }
+
+  const blob = await response.blob();
+  const filename =
+    getFilenameFromDisposition(response.headers.get("Content-Disposition")) ||
+    artifactFilenameFallback[artifactName];
+
+  const objectUrl = window.URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = objectUrl;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  window.URL.revokeObjectURL(objectUrl);
 }

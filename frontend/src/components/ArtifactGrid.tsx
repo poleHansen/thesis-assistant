@@ -1,4 +1,4 @@
-import { getArtifactDownloadUrl } from "../lib/api";
+import { downloadArtifact } from "../lib/api";
 import { artifactDescriptions, artifactLabels } from "../lib/format";
 import type { ArtifactBundle } from "../lib/types";
 
@@ -13,6 +13,18 @@ export function ArtifactGrid({ artifacts, projectId }: ArtifactGridProps) {
         [keyof ArtifactBundle, string]
       >)
     : [];
+
+  const handleDownload = async (key: keyof ArtifactBundle) => {
+    if (!projectId) {
+      return;
+    }
+    try {
+      await downloadArtifact(projectId, key);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "下载失败";
+      window.alert(message);
+    }
+  };
 
   return (
     <section className="panel glass-card">
@@ -31,14 +43,15 @@ export function ArtifactGrid({ artifacts, projectId }: ArtifactGridProps) {
               <p>{artifactDescriptions[key]}</p>
             </div>
             {projectId ? (
-              <a
+              <button
+                type="button"
                 className="button button--ghost"
-                href={getArtifactDownloadUrl(projectId, key)}
-                target="_blank"
-                rel="noreferrer"
+                onClick={() => {
+                  void handleDownload(key);
+                }}
               >
                 下载
-              </a>
+              </button>
             ) : null}
           </article>
         ))}

@@ -6,7 +6,7 @@ import uuid
 from pathlib import Path
 
 from app.artifact_service import ArtifactService
-from app.domain import InnovationCandidate, LiteratureRecord, ProjectCreate, ProjectState, TemplateManifest, TemplateSource
+from app.domain import InnovationCandidate, LiteratureRecord, PaperDocument, PaperNode, ProjectCreate, ProjectState, TemplateManifest, TemplateSource
 from app.storage import ProjectStorage
 
 try:
@@ -133,6 +133,106 @@ class ArtifactServiceTest(unittest.TestCase):
         self.assertNotIn("{{section.", thesis_text)
         self.assertTrue(any("缺少正文内容" in warning for warning in state.warnings))
 
+    @unittest.skipIf(
+        Document is None or Presentation is None,
+        "python-docx or python-pptx is not installed in the current environment",
+    )
+    def test_render_all_outputs_structured_subsections_for_thesis_docx(self) -> None:
+        word_template = self.root / "structured-template.docx"
+        ppt_template = self.root / "structured-template.pptx"
+        template = Document()
+        template.add_paragraph("{{cover.题目}}", style="Title")
+        template.save(word_template)
+        Presentation().save(ppt_template)
+
+        state = self._build_state(str(word_template), str(ppt_template))
+        state.paper_outline = ["第1章 绪论", "第4章 实验结果与分析"]
+        state.paper_document = PaperDocument(
+            title="中文文本分类算法",
+            nodes=[
+                PaperNode(
+                    title="第1章 绪论",
+                    level=1,
+                    children=[
+                        PaperNode(title="研究背景", level=2, paragraphs=["背景段落一。", "背景段落二。"]),
+                        PaperNode(title="问题定义", level=2, paragraphs=["问题定义段落一。", "问题定义段落二。"]),
+                    ],
+                ),
+                PaperNode(
+                    title="第4章 实验结果与分析",
+                    level=1,
+                    children=[
+                        PaperNode(title="实验环境", level=2, paragraphs=["环境段落一。", "环境段落二。"]),
+                        PaperNode(title="主结果分析", level=2, paragraphs=["结果段落一。", "结果段落二。"]),
+                    ],
+                ),
+            ],
+        )
+        state.paper_sections = {
+            "第1章 绪论": "### 研究背景\n\n背景段落一。\n\n### 问题定义\n\n问题定义段落一。",
+            "第4章 实验结果与分析": "### 实验环境\n\n环境段落一。\n\n### 主结果分析\n\n结果段落一。",
+        }
+
+        result = self.service.render_all(state)
+
+        thesis = Document(result.artifacts.thesis_docx)
+        texts = [paragraph.text for paragraph in thesis.paragraphs if paragraph.text.strip()]
+        self.assertIn("第1章 绪论", texts)
+        self.assertIn("研究背景", texts)
+        self.assertIn("主结果分析", texts)
+
+    @unittest.skipIf(
+        Document is None or Presentation is None,
+        "python-docx or python-pptx is not installed in the current environment",
+    )
+    def test_render_all_preserves_docx_caption_guidance_in_final_thesis_docx(self) -> None:
+        word_template = self.root / "caption-template.docx"
+        ppt_template = self.root / "caption-template.pptx"
+        template = Document()
+        template.add_paragraph("{{cover.题目}}", style="Title")
+        template.save(word_template)
+        Presentation().save(ppt_template)
+
+        state = self._build_state(str(word_template), str(ppt_template))
+        state.paper_outline = ["第4章 实验结果与分析", "参考文献"]
+        state.paper_document = PaperDocument(
+            title="中文文本分类算法",
+            nodes=[
+                PaperNode(
+                    title="第4章 实验结果与分析",
+                    level=1,
+                    children=[
+                        PaperNode(
+                            title="主结果分析",
+                            level=2,
+                            paragraphs=[
+                                "本节围绕主结果对比、指标变化和关键现象进行定量分析。",
+                                "表 4-1 主结果对比表。建议将主指标、对比基线和提升幅度整理为独立表题，并在表后追加 1 段结果分析。",
+                                "图 4-1 训练曲线。建议在图后单独说明收敛趋势、稳定性变化与代表性现象。",
+                            ],
+                        )
+                    ],
+                ),
+                PaperNode(
+                    title="参考文献",
+                    level=1,
+                    paragraphs=["参考文献导出时按独立段落组织，不使用项目符号列表。"],
+                ),
+            ],
+        )
+        state.paper_sections = {
+            "第4章 实验结果与分析": "### 主结果分析\n\n表 4-1 主结果对比表。\n\n图 4-1 训练曲线。",
+            "参考文献": "参考文献导出时按独立段落组织，不使用项目符号列表。",
+        }
+
+        result = self.service.render_all(state)
+
+        thesis = Document(result.artifacts.thesis_docx)
+        texts = [paragraph.text for paragraph in thesis.paragraphs if paragraph.text.strip()]
+        self.assertIn("表 4-1 主结果对比表。建议将主指标、对比基线和提升幅度整理为独立表题，并在表后追加 1 段结果分析。", texts)
+        self.assertIn("图 4-1 训练曲线。建议在图后单独说明收敛趋势、稳定性变化与代表性现象。", texts)
+        self.assertIn("参考文献导出时按独立段落组织，不使用项目符号列表。", texts)
+
     def test_render_all_falls_back_when_template_files_are_invalid(self) -> None:
         word_template = self.root / "invalid-template.docx"
         ppt_template = self.root / "invalid-template.pptx"
@@ -145,6 +245,33 @@ class ArtifactServiceTest(unittest.TestCase):
 
         self.assertTrue(Path(result.artifacts.thesis_docx or "").exists())
         self.assertTrue(Path(result.artifacts.defense_pptx or "").exists())
+
+    @unittest.skipIf(Document is None, "python-docx is not installed in the current environment")
+    def test_thesis_docx_fallback_still_returns_docx_when_rendering_fails(self) -> None:
+        state = self._build_state("", "")
+        state.paper_document = PaperDocument(
+            title="中文文本分类算法",
+            nodes=[PaperNode(title="第1章 绪论", level=1, paragraphs=["绪论段落。"])],
+        )
+
+        original_render = self.service._render_paper_document
+
+        def raising_render(*args, **kwargs):
+            raise RuntimeError("render failure")
+
+        self.service._render_paper_document = raising_render  # type: ignore[assignment]
+        try:
+            result = self.service.render_all(state)
+        finally:
+            self.service._render_paper_document = original_render  # type: ignore[assignment]
+
+        thesis_path = Path(result.artifacts.thesis_docx or "")
+        self.assertTrue(thesis_path.exists())
+        self.assertEqual(thesis_path.suffix, ".docx")
+        thesis = Document(str(thesis_path))
+        text = "\n".join(paragraph.text for paragraph in thesis.paragraphs)
+        self.assertIn("论文导出降级结果", text)
+        self.assertTrue(any("论文 Word 渲染失败" in warning for warning in state.warnings))
 
     def test_literature_review_contains_structured_evidence_fields(self) -> None:
         state = self._build_state("", "")
@@ -488,6 +615,37 @@ class ArtifactServiceTest(unittest.TestCase):
         self.assertIn("运行命令", text)
         self.assertIn("结果文件", text)
         self.assertIn("证据来源", text)
+
+    def test_thesis_placeholder_values_ignore_template_only_sections(self) -> None:
+        state = self._build_state("", "")
+        state.template_manifest = TemplateManifest(
+            section_mapping=["封面", "模板致谢", "模板附录"],
+            style_mapping={
+                "title": "Title",
+                "chapter": "Heading 1",
+                "section": "Heading 2",
+                "body": "Normal",
+            },
+            cover_fields=["学校"],
+            figure_slots=[],
+            table_slots=[],
+            citation_style="GB/T 7714",
+            header_footer_rules={},
+            toc_rules={"enabled": True, "depth": 3},
+            ppt_layouts=[],
+        )
+        state.paper_outline = ["摘要", "实验"]
+        state.paper_sections = {
+            "摘要": "这是摘要。",
+            "实验": "这是实验章节。",
+        }
+
+        values = self.service._thesis_placeholder_values(state)
+
+        self.assertIn("section.摘要", values)
+        self.assertIn("section.实验", values)
+        self.assertNotIn("section.模板致谢", values)
+        self.assertNotIn("section.模板附录", values)
 
 
 if __name__ == "__main__":

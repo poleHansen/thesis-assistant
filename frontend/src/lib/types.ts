@@ -359,6 +359,7 @@ export interface ProjectState {
       total_checks?: number;
       warnings?: string[];
     };
+    remediation_summary?: RemediationSummary;
     [key: string]: unknown;
   };
   generated_code_files: Record<string, string>;
@@ -389,6 +390,17 @@ export interface WorkflowStateSummary {
   audit_trail: AuditEvent[];
   blocking_findings: ConsistencyFinding[];
   consistency_summary?: ProjectState["result_schema"]["consistency_summary"];
+}
+
+export interface RemediationSummary {
+  applied: boolean;
+  applied_keys: string[];
+  actions: Array<{
+    key: string;
+    status: string;
+    message: string;
+  }>;
+  rerun_phases: string[];
 }
 
 export interface ProjectListItem {

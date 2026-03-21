@@ -7,7 +7,7 @@ import { ExperimentSummary } from "../components/ExperimentSummary";
 import { InnovationList } from "../components/InnovationList";
 import { RunStatusCard } from "../components/RunStatusCard";
 import { UploadDropzone } from "../components/UploadDropzone";
-import { getProject, getProjectWorkflow, runProject, uploadProjectFile } from "../lib/api";
+import { getProject, getProjectWorkflow, repairProject, runProject, uploadProjectFile } from "../lib/api";
 import { templateSourceText } from "../lib/format";
 import type { UploadKind } from "../lib/types";
 
@@ -44,6 +44,14 @@ export function ProjectDetailPage() {
     enabled: Boolean(projectId),
     refetchInterval: (query) =>
       query.state.data?.status === "running" ? 3000 : false,
+  });
+
+  const repairMutation = useMutation({
+    mutationFn: () => repairProject(projectId),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["project", projectId] });
+      await queryClient.invalidateQueries({ queryKey: ["project-workflow", projectId] });
+    },
   });
 
   const project = projectQuery.data;
@@ -153,8 +161,13 @@ export function ProjectDetailPage() {
               <RunStatusCard
                 project={project}
                 running={runMutation.isPending}
+                repairing={repairMutation.isPending}
+                hasBlockingFindings={Boolean((workflow?.blocking_findings ?? project.result_schema.consistency_summary?.findings?.filter((item) => item.blocking) ?? []).length)}
                 onRun={async () => {
                   await runMutation.mutateAsync();
+                }}
+                onRepair={async () => {
+                  await repairMutation.mutateAsync();
                 }}
               />
               <ExecutionTimeline
@@ -182,6 +195,19 @@ export function ProjectDetailPage() {
                 <div className="panel__header">
                   <div>
                     <p className="eyebrow">Milestone Three</p>
+                    {typeof project.result_schema.remediation_summary === "object" && project.result_schema.remediation_summary ? (
+                      <article className="paper-card">
+                        <strong>自动修复摘要</strong>
+                        <div className="stack-list">
+                          <small>已应用：{project.result_schema.remediation_summary.applied ? "是" : "否"}</small>
+                          {project.result_schema.remediation_summary.actions?.map((action) => (
+                            <small key={`${action.key}-${action.status}`}>
+                              {action.key} / {action.status} / {action.message}
+                            </small>
+                          ))}
+                        </div>
+                      </article>
+                    ) : null}
                     <h3>实现层与交付层摘要</h3>
                   </div>
                 </div>

@@ -13,6 +13,8 @@ from app.domain import (
     RollbackRecord,
     InnovationCandidate,
     LiteratureRecord,
+    PaperDocument,
+    PaperNode,
     ProjectCreate,
     ProjectState,
     RetrievalSummary,
@@ -188,6 +190,7 @@ class ProjectRepository:
             if state_data.get("experiment_plan")
             else None
         )
+        kwargs["paper_document"] = self._build_paper_document(state_data.get("paper_document"))
         kwargs["retrieval_summary"] = RetrievalSummary(
             **self._filter_dataclass_kwargs(RetrievalSummary, state_data.get("retrieval_summary", {}))
         )
@@ -215,6 +218,33 @@ class ProjectRepository:
             if isinstance(item, dict)
         ]
         return ProjectState(**kwargs)
+
+    def _build_paper_document(self, payload: dict | None) -> PaperDocument | None:
+        if not isinstance(payload, dict):
+            return None
+        title = str(payload.get("title", "毕业论文")).strip() or "毕业论文"
+        raw_nodes = payload.get("nodes", [])
+        if not isinstance(raw_nodes, list):
+            raw_nodes = []
+        return PaperDocument(
+            title=title,
+            nodes=[self._build_paper_node(item) for item in raw_nodes if isinstance(item, dict)],
+        )
+
+    def _build_paper_node(self, payload: dict) -> PaperNode:
+        raw_children = payload.get("children", [])
+        if not isinstance(raw_children, list):
+            raw_children = []
+        paragraphs = payload.get("paragraphs", [])
+        source_refs = payload.get("source_refs", [])
+        return PaperNode(
+            title=str(payload.get("title", "未命名章节")).strip() or "未命名章节",
+            level=int(payload.get("level", 1) or 1),
+            paragraphs=[str(item) for item in paragraphs] if isinstance(paragraphs, list) else [],
+            children=[self._build_paper_node(item) for item in raw_children if isinstance(item, dict)],
+            source_refs=[str(item) for item in source_refs] if isinstance(source_refs, list) else [],
+            status=str(payload.get("status", "generated") or "generated"),
+        )
 
     def _filter_dataclass_kwargs(self, model_cls: type, payload: dict | None) -> dict:
         payload = payload or {}

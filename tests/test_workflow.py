@@ -22,6 +22,7 @@ from app.agents import (
     TopicPlannerAgent,
     CodeAgent,
     ResultSchemaAgent,
+    _body_text_length,
     _build_gap_analysis_summary,
     _estimate_candidate_scores,
 )
@@ -523,6 +524,44 @@ class WorkflowTest(unittest.TestCase):
         self.assertTrue(any(item.get("diffs") for item in blocking))
         self.assertTrue(any(item.get("locations") for item in blocking))
 
+    def test_supervisor_repair_applies_remediation_and_reruns_review(self) -> None:
+        root = Path("tests_runtime") / f"workflow-repair-{uuid.uuid4().hex[:8]}"
+        root.mkdir(parents=True, exist_ok=True)
+        try:
+            repository = ProjectRepository(root / "test.db")
+            storage = ProjectStorage(root / "projects")
+            gateway = ModelGateway(ModelSettingsStore.default_settings())
+            template_service = TemplateService()
+            supervisor = LangGraphSupervisor(repository, storage, gateway, template_service)
+
+            state = ProjectState(
+                project_id="project-repair-001",
+                request=ProjectCreate(topic="中文文本分类算法"),
+                workflow_phase="review",
+                workflow_outcome="partial_success",
+                current_node="consistency_checker",
+            )
+            state = ExperimentDesignerAgent(gateway).run(state)
+            state.generated_code_files["README.md"] = "# Demo\n"
+            state.generated_code_files["configs/default.yaml"] = "seed: 42\n"
+            state.result_schema["procedure_document"] = "实验目的\n"
+            state.paper_outline = ["实验"]
+            state.paper_sections = {"实验": "实验章节", "参考文献": ""}
+            state.result_schema["ppt_section_mapping"] = {"方法设计": "方法章节"}
+            state = ConsistencyCheckerAgent(gateway).run(state)
+            repository.create(state)
+
+            repaired = supervisor.repair(state)
+
+            remediation = repaired.result_schema.get("remediation_summary", {})
+            self.assertTrue(remediation.get("actions"))
+            self.assertIn("review", remediation.get("rerun_phases", []))
+            self.assertTrue(repaired.generated_code_files.get("README.md"))
+            self.assertTrue(repaired.result_schema.get("consistency_summary"))
+            self.assertIn(repaired.workflow_outcome, {"rollback_success", "partial_success", "success"})
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
     def test_section_writer_reuses_structured_result_content_in_experiment_section(self) -> None:
         gateway = ModelGateway(ModelSettingsStore.default_settings())
         state = ProjectState(
@@ -550,6 +589,95 @@ class WorkflowTest(unittest.TestCase):
         self.assertIn(str(state.result_schema.get("result_summary_for_paper", "")), experiment_text)
         self.assertIn("主结果对比表", experiment_text)
         self.assertIn("训练曲线", experiment_text)
+
+    def test_section_writer_builds_hierarchical_paper_document(self) -> None:
+        gateway = ModelGateway(ModelSettingsStore.default_settings())
+        state = ProjectState(
+            project_id="project-paper-document",
+            request=ProjectCreate(topic="中文文本分类算法", delivery_mode="draft"),
+            selected_innovation=InnovationCandidate(
+                claim="基于轻量增强模块的文本分类改进方案",
+                supporting_papers=["Paper A"],
+                contrast_papers=["Paper B"],
+                novelty_reason="有效",
+                feasibility_score=8.0,
+                risk="可控",
+                verification_plan="补充实验",
+            ),
+        )
+        state = ExperimentDesignerAgent(gateway).run(state)
+        state.paper_outline = ["第1章 绪论", "第4章 实验结果与分析", "第5章 总结与展望"]
+
+        state = SectionWriterAgent(gateway).run(state)
+
+        self.assertIsNotNone(state.paper_document)
+        experiment_node = next((node for node in state.paper_document.nodes if "实验" in node.title), None)
+        self.assertIsNotNone(experiment_node)
+        self.assertGreaterEqual(len(experiment_node.children), 3)
+        self.assertTrue(all(child.paragraphs for child in experiment_node.children))
+        experiment_text = state.paper_sections.get("第4章 实验结果与分析", "")
+        self.assertIn("### 实验环境", experiment_text)
+        self.assertIn("### 主结果分析", experiment_text)
+
+    def test_section_writer_records_docx_guidelines_for_export_friendly_thesis(self) -> None:
+        gateway = ModelGateway(ModelSettingsStore.default_settings())
+        state = ProjectState(
+            project_id="project-docx-guidelines",
+            request=ProjectCreate(topic="中文文本分类算法", delivery_mode="final"),
+            selected_innovation=InnovationCandidate(
+                claim="基于轻量增强模块的文本分类改进方案",
+                supporting_papers=["Paper A"],
+                contrast_papers=["Paper B"],
+                novelty_reason="有效",
+                feasibility_score=8.0,
+                risk="可控",
+                verification_plan="补充实验",
+            ),
+        )
+        state = ExperimentDesignerAgent(gateway).run(state)
+        state = ResultSchemaAgent(gateway).run(state)
+        state = ResultAnalystAgent(gateway).run(state)
+        state.paper_outline = ["第4章 实验结果与分析", "参考文献"]
+
+        state = SectionWriterAgent(gateway).run(state)
+
+        guidelines = state.result_schema.get("docx_writing_guidelines", [])
+        profile = state.result_schema.get("docx_render_profile", {})
+        experiment_text = state.paper_sections.get("第4章 实验结果与分析", "")
+        references_text = state.paper_sections.get("参考文献", "")
+        self.assertTrue(any("目录作为独立章节占位" in str(item) for item in guidelines))
+        self.assertEqual(profile.get("table_caption_required"), True)
+        self.assertIn("表 4-1 主结果对比表", experiment_text)
+        self.assertIn("图 4-1 训练曲线", experiment_text)
+        self.assertIn("独立段落", references_text)
+
+    def test_outline_writer_uses_system_outline_instead_of_template_sections(self) -> None:
+        gateway = ModelGateway(ModelSettingsStore.default_settings())
+        state = ProjectState(
+            project_id="project-outline-source",
+            request=ProjectCreate(topic="中文文本分类算法", delivery_mode="draft"),
+        )
+        state.template_manifest = __import__("app.domain", fromlist=["TemplateManifest"]).TemplateManifest(
+            section_mapping=["封面", "第1章 模板特有章节", "第2章 模板实验"],
+            style_mapping={"chapter": "Heading 1", "body": "Normal"},
+            cover_fields=["学校"],
+            figure_slots=[],
+            table_slots=[],
+            citation_style="GB/T 7714",
+            header_footer_rules={},
+            toc_rules={"enabled": True, "depth": 3},
+            ppt_layouts=[],
+        )
+
+        state = OutlineWriterAgent(gateway).run(state)
+
+        self.assertEqual(
+            state.paper_outline,
+            ["摘要", "Abstract", "引言", "相关工作", "方法", "实验", "结论", "参考文献"],
+        )
+        self.assertNotIn("第1章 模板特有章节", state.paper_outline)
+        self.assertNotIn("封面", state.paper_outline)
+        self.assertNotIn("目录", state.paper_outline)
 
     def test_section_writer_in_draft_mode_avoids_unverified_result_claims(self) -> None:
         gateway = ModelGateway(ModelSettingsStore.default_settings())
@@ -717,6 +845,57 @@ class WorkflowTest(unittest.TestCase):
         self.assertGreaterEqual(len(reviewed.warnings), 3)
         self.assertTrue(any("fallback" in warning for warning in reviewed.warnings))
         self.assertTrue(any("第二候选" in warning for warning in reviewed.warnings))
+
+    def test_body_text_length_excludes_references_and_appendix(self) -> None:
+        state = ProjectState(
+            project_id="project-body-length-scope",
+            request=ProjectCreate(topic="中文文本分类算法"),
+            paper_sections={
+                "引言": "这是正文内容",
+                "第4章 实验结果与分析": "### 主结果分析\n这里也是正文",
+                "参考文献": "[1] Reference",
+                "附录": "附录内容不计入正文字数",
+            },
+        )
+
+        length = _body_text_length(state)
+
+        self.assertEqual(length, len("这是正文内容主结果分析这里也是正文"))
+
+    def test_section_writer_expands_body_when_under_min_length(self) -> None:
+        class DummyGateway:
+            def complete(self, task_type: str, prompt: str, *, system_prompt: str = ""):
+                content = "补写正文段落。" * 220 if "需补写约" in prompt else "生成正文段落。"
+                return SimpleNamespace(
+                    provider="dummy-writer",
+                    model="dummy-model",
+                    content=content,
+                    fallback_used=False,
+                )
+
+        state = ProjectState(
+            project_id="project-body-length-expansion",
+            request=ProjectCreate(topic="中文文本分类算法", delivery_mode="draft"),
+            selected_innovation=InnovationCandidate(
+                claim="基于轻量增强模块的文本分类改进方案",
+                supporting_papers=["Paper A"],
+                contrast_papers=["Paper B"],
+                novelty_reason="有效",
+                feasibility_score=8.0,
+                risk="可控",
+                verification_plan="补充实验",
+            ),
+        )
+        state = ExperimentDesignerAgent(ModelGateway(ModelSettingsStore.default_settings())).run(state)
+        state.paper_outline = ["引言", "相关工作", "方法", "实验", "结论", "参考文献"]
+
+        state = SectionWriterAgent(DummyGateway()).run(state)
+
+        self.assertTrue(state.result_schema.get("paper_body_min_length_satisfied"))
+        self.assertGreaterEqual(state.result_schema.get("paper_body_char_count", 0), 8000)
+        self.assertTrue(
+            any(item.get("scope") == "expansion" for item in state.result_schema.get("paper_generation_trace", []))
+        )
 
     def test_reader_agent_merges_llm_structured_fields(self) -> None:
         class DummyGateway:

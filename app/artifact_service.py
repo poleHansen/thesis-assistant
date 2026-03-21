@@ -7,7 +7,7 @@ import textwrap
 import zipfile
 from pathlib import Path
 
-from app.domain import ArtifactBundle, ProjectState, TemplateManifest
+from app.domain import ArtifactBundle, PaperDocument, PaperNode, ProjectState, TemplateManifest
 from app.storage import ProjectStorage
 
 
@@ -55,12 +55,11 @@ class ArtifactService:
                 str(state.result_schema.get("procedure_document", "")),
                 manifest=state.template_manifest,
             ),
-            thesis_docx=self._write_docx_like(
+            thesis_docx=self._write_thesis_docx(
                 reports_dir / "thesis.docx",
-                self._thesis_text(state),
+                state,
                 template_path=word_template_path,
                 manifest=state.template_manifest,
-                placeholder_values=self._thesis_placeholder_values(state),
             ),
             thesis_pdf=self._write_minimal_pdf(
                 reports_dir / "thesis.pdf",
@@ -309,12 +308,23 @@ class ArtifactService:
         )
 
     def _thesis_text(self, state: ProjectState) -> str:
+        if state.paper_document:
+            parts = [f"# {state.paper_document.title}", ""]
+            for node in state.paper_document.nodes:
+                parts.append(f"## {node.title}")
+                rendered = self._render_paper_node_markdown(node)
+                if rendered:
+                    parts.append(rendered)
+                if "实验" in node.title:
+                    parts.extend(self._format_result_analysis_blocks(state))
+                parts.append("")
+            return "\n".join(parts)
         manifest = state.template_manifest or TemplateManifest([], {}, [], [], [], "", {}, {})
         template_name = state.template_source.template_name if state.template_source else "未设置"
         parts = [
             "# 毕业论文",
             f"模板来源：{template_name}",
-            f"模板章节顺序：{' / '.join(manifest.section_mapping)}",
+            f"正文结构来源：{' / '.join(state.paper_outline)}",
             "",
         ]
         for section in state.paper_outline:
@@ -324,6 +334,16 @@ class ArtifactService:
                 parts.extend(self._format_result_analysis_blocks(state))
             parts.append("")
         return "\n".join(parts)
+
+    def _render_paper_node_markdown(self, node: PaperNode) -> str:
+        parts: list[str] = []
+        for paragraph in node.paragraphs:
+            if paragraph.strip():
+                parts.append(paragraph.strip())
+        for child in node.children:
+            parts.append(f"### {child.title}")
+            parts.extend(item.strip() for item in child.paragraphs if item.strip())
+        return "\n\n".join(parts).strip()
 
     def _ppt_text(self, state: ProjectState) -> str:
         lines = ["答辩 PPT 结构", ""]
@@ -450,6 +470,53 @@ class ArtifactService:
             fallback.write_text(content, encoding="utf-8")
             return str(fallback)
 
+    def _write_thesis_docx(
+        self,
+        path: Path,
+        state: ProjectState,
+        *,
+        template_path: str | None = None,
+        manifest: TemplateManifest | None = None,
+    ) -> str:
+        if not state.paper_document:
+            result = self._write_docx_like(
+                path,
+                self._thesis_text(state),
+                template_path=template_path,
+                manifest=manifest,
+                placeholder_values=self._thesis_placeholder_values(state),
+            )
+            if Path(result).suffix.lower() == ".docx":
+                return result
+            warning = "论文 Word 渲染失败，已降级为最小 DOCX 文档。"
+            state.warnings.append(warning)
+            return self._write_minimal_docx_fallback(path, self._thesis_text(state), warning)
+        try:
+            from docx import Document  # type: ignore
+
+            document = self._load_docx_document(Document, template_path)
+            placeholder_values = self._thesis_placeholder_values(state)
+            self._replace_docx_placeholders(document, self._cover_placeholder_values(placeholder_values))
+            self._clear_section_placeholders(document)
+            self._render_paper_document(document, state, manifest)
+            document.save(path)
+            return str(path)
+        except Exception as exc:
+            warning = f"论文 Word 渲染失败，已降级为最小 DOCX 文档：{exc}"
+            state.warnings.append(warning)
+            return self._write_minimal_docx_fallback(path, self._thesis_text(state), warning)
+
+    def _write_minimal_docx_fallback(self, path: Path, content: str, warning: str) -> str:
+        from docx import Document  # type: ignore
+
+        document = Document()
+        document.add_heading("论文导出降级结果", level=1)
+        document.add_paragraph(warning)
+        for block in [segment.strip() for segment in content.split("\n\n") if segment.strip()]:
+            document.add_paragraph(block)
+        document.save(path)
+        return str(path)
+
     def _load_docx_document(self, document_cls, template_path: str | None):
         if template_path:
             candidate = Path(template_path)
@@ -459,6 +526,13 @@ class ArtifactService:
                 except Exception:
                     pass
         return document_cls()
+
+    def _cover_placeholder_values(self, placeholder_values: dict[str, str]) -> dict[str, str]:
+        return {
+            key: value
+            for key, value in placeholder_values.items()
+            if key.startswith("cover.") or key.startswith("thesis.")
+        }
 
     def _thesis_placeholder_values(self, state: ProjectState) -> dict[str, str]:
         manifest = state.template_manifest or TemplateManifest([], {}, [], [], [], "", {}, {})
@@ -470,7 +544,7 @@ class ArtifactService:
         }
         for field_name in manifest.cover_fields:
             values.setdefault(f"cover.{field_name}", "")
-        section_names = list(dict.fromkeys([*manifest.section_mapping, *state.paper_outline, *state.paper_sections.keys()]))
+        section_names = list(dict.fromkeys([*state.paper_outline, *state.paper_sections.keys()]))
         for section in section_names:
             section_text = self._resolve_section_text(section, state)
             values[f"section.{section}"] = section_text
@@ -514,6 +588,148 @@ class ArtifactService:
                     for paragraph in list(cell.paragraphs):
                         replaced += self._replace_docx_placeholders_in_paragraph(paragraph, placeholder_values)
         return replaced
+
+    def _clear_section_placeholders(self, document) -> None:
+        for paragraph in list(document.paragraphs):
+            original = paragraph.text
+            if not original or "{{section." not in original:
+                continue
+            updated = DOCX_PLACEHOLDER_PATTERN.sub(
+                lambda match: "" if match.group(1).startswith("section.") else match.group(0),
+                original,
+            )
+            self._update_paragraph_runs(paragraph, updated)
+        for table in document.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    for paragraph in list(cell.paragraphs):
+                        original = paragraph.text
+                        if not original or "{{section." not in original:
+                            continue
+                        updated = DOCX_PLACEHOLDER_PATTERN.sub(
+                            lambda match: "" if match.group(1).startswith("section.") else match.group(0),
+                            original,
+                        )
+                        self._update_paragraph_runs(paragraph, updated)
+
+    def _render_paper_document(self, document, state: ProjectState, manifest: TemplateManifest | None) -> None:
+        paper_document = state.paper_document or self._paper_document_from_sections(state)
+        if not paper_document:
+            for line in self._thesis_text(state).splitlines():
+                self._append_docx_line(document, line, manifest)
+            return
+
+        self._append_document_heading(document, paper_document.title, manifest, level=0)
+        self._append_body_paragraph(
+            document,
+            f"模板来源：{state.template_source.template_name if state.template_source else '未设置'}",
+            manifest,
+        )
+        self._append_toc_placeholder(document, paper_document, manifest)
+        for node in paper_document.nodes:
+            self._render_paper_node(document, node, state, manifest)
+
+    def _paper_document_from_sections(self, state: ProjectState) -> PaperDocument | None:
+        if not state.paper_sections:
+            return None
+        nodes = [
+            PaperNode(title=title, level=1, paragraphs=[content] if content else [])
+            for title, content in state.paper_sections.items()
+        ]
+        return PaperDocument(title=state.request.topic or "毕业论文", nodes=nodes)
+
+    def _append_toc_placeholder(self, document, paper_document: PaperDocument, manifest: TemplateManifest | None) -> None:
+        self._add_docx_paragraph(document, "目录", self._resolve_docx_style(document, [self._manifest_style(manifest, "chapter"), "Heading 1"]), heading_level=1)
+        for index, node in enumerate(paper_document.nodes, start=1):
+            self._append_body_paragraph(document, f"{index}. {node.title}", manifest)
+            for child_index, child in enumerate(node.children, start=1):
+                self._append_body_paragraph(document, f"{index}.{child_index} {child.title}", manifest)
+
+    def _render_paper_node(self, document, node: PaperNode, state: ProjectState, manifest: TemplateManifest | None) -> None:
+        if node.title not in {"封面", "目录"}:
+            document.add_page_break()
+        self._append_document_heading(document, node.title, manifest, level=1)
+        for paragraph in node.paragraphs:
+            self._append_body_paragraph(document, paragraph, manifest)
+        for child in node.children:
+            self._append_document_heading(document, child.title, manifest, level=min(child.level, 3))
+            for paragraph in child.paragraphs:
+                self._append_body_paragraph(document, paragraph, manifest)
+            if "主结果" in child.title or "消融" in child.title:
+                self._render_result_tables(document, state, manifest)
+                self._render_result_figures(document, state, manifest)
+        if "参考文献" in node.title:
+            self._render_reference_list(document, state, manifest)
+
+    def _append_document_heading(self, document, text: str, manifest: TemplateManifest | None, *, level: int) -> None:
+        style_map = {0: "title", 1: "chapter", 2: "section", 3: "subsection"}
+        style_name = self._resolve_docx_style(
+            document,
+            [self._manifest_style(manifest, style_map.get(level, "section")), f"Heading {max(1, min(level, 3))}"] if level else [self._manifest_style(manifest, "title"), "Title"],
+        )
+        heading_level = None if level == 0 else max(1, min(level, 3))
+        self._add_docx_paragraph(document, text, style_name, heading_level=heading_level)
+
+    def _append_body_paragraph(self, document, text: str, manifest: TemplateManifest | None) -> None:
+        style_name = self._resolve_docx_style(document, [self._manifest_style(manifest, "body"), "Normal"])
+        self._add_docx_paragraph(document, text, style_name)
+
+    def _render_result_tables(self, document, state: ProjectState, manifest: TemplateManifest | None) -> None:
+        result_tables = state.result_schema.get("result_tables", [])
+        if not isinstance(result_tables, list):
+            return
+        for table in result_tables[:2]:
+            if not isinstance(table, dict):
+                continue
+            title = str(table.get("title") or table.get("name") or "结果表").strip()
+            if title:
+                self._append_body_paragraph(document, title, manifest)
+            columns = table.get("columns", [])
+            rows = table.get("rows", [])
+            if not isinstance(columns, list) or not columns:
+                continue
+            doc_table = document.add_table(rows=1, cols=len(columns))
+            doc_table.style = "Table Grid"
+            for idx, column in enumerate(columns):
+                doc_table.rows[0].cells[idx].text = str(column)
+            for row in rows[:3] if isinstance(rows, list) else []:
+                if not isinstance(row, dict):
+                    continue
+                cells = doc_table.add_row().cells
+                for idx, column in enumerate(columns):
+                    cells[idx].text = str(row.get(column, ""))
+            summary = str(table.get("summary", "")).strip()
+            if summary:
+                self._append_body_paragraph(document, summary, manifest)
+
+    def _render_result_figures(self, document, state: ProjectState, manifest: TemplateManifest | None) -> None:
+        result_figures = state.result_schema.get("result_figures", [])
+        if not isinstance(result_figures, list):
+            return
+        for figure in result_figures[:2]:
+            if not isinstance(figure, dict):
+                continue
+            title = str(figure.get("title") or figure.get("name") or "结果图").strip()
+            caption = str(figure.get("caption", "")).strip()
+            insight = str(figure.get("insight", "")).strip()
+            if title:
+                self._append_body_paragraph(document, title, manifest)
+            if caption:
+                self._append_body_paragraph(document, f"图表说明：{caption}", manifest)
+            if insight:
+                self._append_body_paragraph(document, f"分析结论：{insight}", manifest)
+
+    def _render_reference_list(self, document, state: ProjectState, manifest: TemplateManifest | None) -> None:
+        references = [
+            f"[{idx + 1}] {record.authors}. {record.title}. {record.year}."
+            for idx, record in enumerate(state.literature_records[:8])
+            if record.title
+        ]
+        if not references:
+            self._append_body_paragraph(document, "参考文献待根据文献检索结果补充。", manifest)
+            return
+        for item in references:
+            self._append_body_paragraph(document, item, manifest)
 
     def _replace_docx_placeholders_in_paragraph(self, paragraph, placeholder_values: dict[str, str]) -> int:
         original = paragraph.text

@@ -64,3 +64,60 @@ class MainApiTest(unittest.TestCase):
         self.assertEqual(payload["workflow_phase"], "review")
         self.assertEqual(payload["workflow_outcome"], "partial_success")
         self.assertEqual(len(payload["blocking_findings"]), 1)
+
+    def test_post_project_repair_returns_remediation_summary(self) -> None:
+        original_repair = self.main.supervisor.repair
+
+        def fake_repair(state):
+            state.result_schema["remediation_summary"] = {
+                "applied": True,
+                "applied_keys": ["citation_binding"],
+                "actions": [{"key": "citation_binding", "status": "applied", "message": "Auto remediation applied."}],
+                "rerun_phases": ["review"],
+            }
+            state.workflow_outcome = "rollback_success"
+            return state
+
+        self.main.supervisor.repair = fake_repair
+        try:
+            response = self.client.post("/projects/project-workflow-api/repair")
+        finally:
+            self.main.supervisor.repair = original_repair
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["workflow_outcome"], "rollback_success")
+        self.assertTrue(payload["remediation_summary"]["applied"])
+
+    def test_download_artifact_returns_attachment_headers_for_docx(self) -> None:
+        artifact_path = self.root / "thesis.docx"
+        artifact_path.write_bytes(b"fake-docx-content")
+
+        state = self.main.repository.get("project-workflow-api")
+        assert state is not None
+        state.artifacts.thesis_docx = str(artifact_path)
+        self.main.repository.save(state)
+
+        response = self.client.get("/projects/project-workflow-api/artifacts/thesis_docx")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.headers["content-type"],
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+        self.assertIn("attachment", response.headers["content-disposition"])
+        self.assertIn('filename="thesis.docx"', response.headers["content-disposition"])
+
+    def test_download_artifact_rejects_legacy_markdown_thesis(self) -> None:
+        artifact_path = self.root / "thesis.md"
+        artifact_path.write_text("legacy thesis markdown", encoding="utf-8")
+
+        state = self.main.repository.get("project-workflow-api")
+        assert state is not None
+        state.artifacts.thesis_docx = str(artifact_path)
+        self.main.repository.save(state)
+
+        response = self.client.get("/projects/project-workflow-api/artifacts/thesis_docx")
+
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("Legacy thesis artifact is markdown", response.text)

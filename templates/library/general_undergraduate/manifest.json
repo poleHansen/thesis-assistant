@@ -16,8 +16,12 @@
     "title": "Title",
     "chapter": "Heading 1",
     "section": "Heading 2",
+    "subsection": "Heading 3",
     "body": "Normal",
-    "caption": "Caption"
+    "caption": "Caption",
+    "reference": "Normal",
+    "table": "Table Grid",
+    "figure": "Caption"
   },
   "cover_fields": [
     "学校",

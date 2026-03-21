@@ -119,6 +119,8 @@ class TemplateSource:
 
 @dataclass(slots=True)
 class TemplateManifest:
+    # Template-observed section labels and placeholders used for style/template compatibility.
+    # They are not the authoritative source of thesis body structure.
     section_mapping: list[str]
     style_mapping: dict[str, str]
     cover_fields: list[str]
@@ -211,6 +213,22 @@ class ExperimentPlan:
 
 
 @dataclass(slots=True)
+class PaperNode:
+    title: str
+    level: int
+    paragraphs: list[str] = field(default_factory=list)
+    children: list["PaperNode"] = field(default_factory=list)
+    source_refs: list[str] = field(default_factory=list)
+    status: str = "generated"
+
+
+@dataclass(slots=True)
+class PaperDocument:
+    title: str
+    nodes: list[PaperNode] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class ArtifactBundle:
     literature_review: str | None = None
     innovation_report: str | None = None
@@ -297,6 +315,7 @@ class ProjectState:
     generated_code_files: dict[str, str] = field(default_factory=dict)
     paper_outline: list[str] = field(default_factory=list)
     paper_sections: dict[str, str] = field(default_factory=dict)
+    paper_document: PaperDocument | None = None
     ppt_outline: list[str] = field(default_factory=list)
     review_findings: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)

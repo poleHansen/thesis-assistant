@@ -25,8 +25,12 @@ DEFAULT_USER_STYLE_MAPPING = {
     "title": "Title",
     "chapter": "Heading 1",
     "section": "Heading 2",
+    "subsection": "Heading 3",
     "body": "Normal",
     "caption": "Caption",
+    "reference": "Normal",
+    "table": "Table Grid",
+    "figure": "Caption",
 }
 
 PLACEHOLDER_PATTERN = re.compile(r"\{\{\s*([\w\-.\u4e00-\u9fff ]+)\s*\}\}")
@@ -61,6 +65,8 @@ class TemplateService:
     def parse_user_template(
         self, template_path: Path
     ) -> tuple[TemplateSource, TemplateManifest]:
+        # Extract template-visible section labels as compatibility hints only.
+        # Thesis body structure is generated elsewhere by the writing pipeline.
         section_mapping, style_mapping, cover_fields = self._extract_docx_hints(
             template_path,
             DEFAULT_USER_SECTIONS,
@@ -155,8 +161,15 @@ class TemplateService:
                     styles_seen["chapter"] = style_name
                 elif style_name.startswith("Heading 2"):
                     styles_seen["section"] = style_name
+                elif style_name.startswith("Heading 3"):
+                    styles_seen["subsection"] = style_name
+                elif style_name.lower() in {"normal", "body text", "body text first indent"}:
+                    styles_seen.setdefault("body", style_name)
                 elif "caption" in style_name.lower():
                     styles_seen["caption"] = style_name
+                    styles_seen.setdefault("figure", style_name)
+                elif "reference" in style_name.lower() or "参考文献" in style_name:
+                    styles_seen["reference"] = style_name
             if section_placeholders:
                 section_mapping = section_placeholders[:20]
             elif headings:
